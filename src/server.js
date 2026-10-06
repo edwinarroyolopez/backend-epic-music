@@ -1,6 +1,9 @@
 import express from "express";
 import dotenv from "dotenv";
 
+import aiRoutes from "./routes/ai.routes.js";
+
+
 import { loginController, signupController } from './controllers/user.controller.js';
 import { connectMongo } from "./db/mongo.service.js";
 
@@ -30,6 +33,8 @@ app.put('/signup', async (request, response) => {
 })
 
 
+
+app.use("/ai", aiRoutes);
 
 const startServer = async () => {
 
