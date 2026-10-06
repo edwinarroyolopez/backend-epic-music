@@ -1,25 +1,48 @@
 import express from "express";
+import dotenv from "dotenv";
+
+import { loginController, signupController } from './controllers/user.controller.js';
+import { connectMongo } from "./db/mongo.service.js";
+
+dotenv.config();
 
 const app = express();
+app.use(express.json());
 
 app.get('/', (request, response) => {
-    console.log("Hola mundo!");
     response.send("<h2>Hola mundo</h2>")
 })
 
+app.post('/', (request, response) => {
+    const { body } = request;
+
+    console.log(body)
+
+    response.send("datos: ", JSON.stringify(body))
+})
+
 app.get('/login', (request, response) => {
-    response.send("<h2>Esta es la página de login</h2>")
+    loginController(request, response);
 })
 
-app.get('/signup', (request, response) => {
-    response.send("<h2>Esta es la página de registro</h2>")
-})
-
-app.listen(7000, () => {
-    console.log("Server is running on http://localhost:7000")
+app.put('/signup', async (request, response) => {
+    await signupController(request, response)
 })
 
 
+
+const startServer = async () => {
+
+    await connectMongo();
+
+    app.listen(7000, () => {
+        console.log("Server is running on http://localhost:7000")
+    })
+
+
+}
+
+startServer();
 
 
 console.log("This is the server!");
