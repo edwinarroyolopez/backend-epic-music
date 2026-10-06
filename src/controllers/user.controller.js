@@ -20,10 +20,10 @@ const loginController = (req, res) => {
 const signupController = async (req, res) => {
 
     const { body } = req;
-    const { username, password, phone } = body
+    const { username, password, phone, email } = body
 
     const user = await
-        createUser({ username, password, phone });
+        createUser({ username, password, phone, email });
 
     res.json(user)
 
