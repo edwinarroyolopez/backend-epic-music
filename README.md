@@ -62,6 +62,14 @@ reinicios ante salida fallida. Railway debe disponer de MONGODB_URI/JWT_SECRET/
 proveedor válidos y dirigir tráfico al mismo `PORT` asignado al servicio.
 El puerto se abre explícitamente en `0.0.0.0` antes de inicializar Mongo.
 
+Compatibilidad con el dominio existente: el backend original escuchaba siempre
+en **7000**. Al detectar `RAILWAY_ENVIRONMENT_ID`, también se sirve la misma app
+en 7000 si el `PORT` asignado es distinto. Así funcionan tanto el Target Port
+legado del dominio como el puerto de healthcheck de Railway. Mongo e índices se
+inicializan una sola vez. `LEGACY_HTTP_PORT` permite cambiar ese puerto; `0` lo
+desactiva cuando el dominio ya apunte al PORT asignado. En desarrollo local no se
+abre un puerto adicional.
+
 Mientras Mongo/índices no estén listos, `/auth/providers` y OPTIONS responden
 normalmente, y login/signup/me/playlists responden 503 UNAVAILABLE con CORS
 (me/playlists sin JWT conservan 401). Así no se confunde un error de base de datos
