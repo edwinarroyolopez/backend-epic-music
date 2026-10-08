@@ -15,13 +15,17 @@ dotenv.config();
 
 const allowedOrigins = [
     "http://localhost:3000",
+    "http://127.0.0.1:3000",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
-    "https://TU-SITIO.netlify.app"
+    "https://musica-epica-ed.netlify.app"
 ];
+// Deploy permalinks, deploy-preview-N and branch deploys of this site only.
+const netlifyPreviewOrigin = /^https:\/\/[a-z0-9](?:[a-z0-9-]*[a-z0-9])?--musica-epica-ed\.netlify\.app$/;
 
 export function createApp({ search } = {}) {
 const app = express();
+const origins = new Set([...allowedOrigins, ...(process.env.CORS_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean)]);
 
 
 app.use(
@@ -34,12 +38,12 @@ app.use(
                 return callback(null, true);
             }
 
-            if (allowedOrigins.includes(origin)) {
+            if (origins.has(origin) || netlifyPreviewOrigin.test(origin)) {
                 return callback(null, true);
             }
 
             return callback(
-                new Error(`Origin no permitido por CORS: ${origin}`)
+                Object.assign(new Error('Origen no permitido por CORS'), { code: 'CORS_ORIGIN_DENIED' })
             );
         },
 
@@ -157,6 +161,9 @@ app.use('/playlists', playlistRoutes);
 /* music things */
 app.post('/search-songs', createSearchSongsController(search));
 app.use((error, _req, res, _next) => {
+    if (error.code === 'CORS_ORIGIN_DENIED') {
+        return res.status(403).json({ success: false, error: { code: error.code, message: 'Origen no permitido por CORS' } });
+    }
     const status = error.type === 'entity.parse.failed' ? 400 : error.type === 'entity.too.large' ? 413 : 500;
     res.status(status).json({ success: false, error: { code: status === 500 ? 'INTERNAL_ERROR' : 'VALIDATION_ERROR', message: status === 500 ? 'Error interno' : 'JSON inválido o demasiado grande' } });
 });

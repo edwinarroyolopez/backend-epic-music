@@ -51,6 +51,33 @@ el estado antes de repetir; la adición es deduplicada, la creación no es idemp
 
 Contrato completo: `../ai/02_CONTRACTS.md`.
 
+## Railway y CORS de Netlify
+
+API pública configurada para el frontend:
+`https://backend-epic-music-production.up.railway.app`.
+Railway debe ejecutar `npm start`, disponer de MONGODB_URI/JWT_SECRET/proveedor
+válidos y dirigir tráfico al puerto `PORT` asignado al servicio. El arranque
+espera la conexión Mongo y la inicialización del índice de playlists.
+
+CORS permite `https://musica-epica-ed.netlify.app`, los deploys/previews/ramas
+`https://<prefijo>--musica-epica-ed.netlify.app` y localhost de desarrollo.
+No permite otros sitios Netlify. Para dominios propios adicionales usar
+`CORS_ORIGINS=https://music.example.com,https://www.music.example.com`.
+Permite preflights con Authorization/Content-Type y GET/POST/PATCH/DELETE;
+las rutas privadas siguen exigiendo JWT. Origen rechazado →403 CORS_ORIGIN_DENIED.
+
+Comprobación pública sin credenciales:
+```bash
+curl -i https://backend-epic-music-production.up.railway.app/health
+curl -i -X OPTIONS https://backend-epic-music-production.up.railway.app/search-songs \
+  -H 'Origin: https://musica-epica-ed.netlify.app' \
+  -H 'Access-Control-Request-Method: POST' \
+  -H 'Access-Control-Request-Headers: content-type,authorization'
+```
+Esperado: health 200 con Mongo conectado; OPTIONS 204 con
+Access-Control-Allow-Origin coincidente. Un 502 de railway-hikari indica que la
+aplicación no respondió, antes de comprobar el CORS de Express.
+
 ## Pruebas locales aisladas
 
 ```bash
