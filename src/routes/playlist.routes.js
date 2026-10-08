@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import { authenticateToken } from '../middlewares/auth.middleware.js';
+import { requireDatabaseReady } from '../middlewares/database.middleware.js';
 import { User } from '../models/user.model.js';
 import { Playlist, serializePlaylist } from '../models/playlist.model.js';
 import { PlaylistError, objectId, fields, invalid, metadata, songInputs, createPlaylist, ownedPlaylist, mutatePlaylist, addSongs } from '../services/playlist.service.js';
 
 export const playlistRoutes = Router();
 playlistRoutes.use(authenticateToken);
+playlistRoutes.use(requireDatabaseReady);
 playlistRoutes.use(async (req, _res, next) => {
     if (typeof req.user.sub !== 'string' || !/^[a-f\d]{24}$/i.test(req.user.sub)) throw new PlaylistError('UNAUTHORIZED', 401);
     const user = await User.findById(req.user.sub).select('active');

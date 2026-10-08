@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 import cors from "cors";
 
 import { authenticateToken } from "./middlewares/auth.middleware.js";
+import { requireDatabaseReady } from './middlewares/database.middleware.js';
 
 import aiRoutes from "./routes/ai.routes.js";
 import { loginController, signupController } from './controllers/user.controller.js';
@@ -23,8 +24,9 @@ const allowedOrigins = [
 // Deploy permalinks, deploy-preview-N and branch deploys of this site only.
 const netlifyPreviewOrigin = /^https:\/\/[a-z0-9](?:[a-z0-9-]*[a-z0-9])?--musica-epica-ed\.netlify\.app$/;
 
-export function createApp({ search } = {}) {
+export function createApp({ search, isReady = () => mongoose.connection.readyState === 1 } = {}) {
 const app = express();
+app.locals.isReady = isReady;
 const origins = new Set([...allowedOrigins, ...(process.env.CORS_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean)]);
 
 
@@ -70,7 +72,12 @@ app.use(express.json({ limit: '512kb' }));
 
 app.get('/health', (_req, res) => {
     const connected = mongoose.connection.readyState === 1;
-    res.status(connected ? 200 : 503).json({ success: connected, data: { database: connected ? 'connected' : 'disconnected' } });
+    const ready = connected && isReady();
+    res.status(ready ? 200 : 503).json({
+        success: ready,
+        data: { database: connected ? 'connected' : 'disconnected', ready },
+        ...(!ready && { error: { code: 'UNAVAILABLE', message: 'Base de datos o índices no disponibles' } }),
+    });
 });
 app.get('/auth/providers', (_req, res) => res.json({ email: true, apple: false, google: false, spotify: false }));
 
@@ -81,17 +88,20 @@ app.get('/', (request, response) => {
 
 app.post(
     "/auth/login",
+    requireDatabaseReady,
     loginController
 );
 
 app.post(
     "/auth/signup",
+    requireDatabaseReady,
     signupController
 );
 
 app.get(
     "/auth/me",
     authenticateToken,
+    requireDatabaseReady,
     async (req, res) => {
 
         try {

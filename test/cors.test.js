@@ -21,7 +21,7 @@ test('Netlify production/previews support authenticated preflights; unrelated or
             'http://localhost:5173', 'http://127.0.0.1:5173',
             'https://music.example.test',
         ]) {
-            for (const method of ['POST', 'PATCH', 'DELETE']) {
+            for (const method of ['GET', 'POST', 'PATCH', 'DELETE']) {
                 const response = await fetch(`${base}/playlists`, { method: 'OPTIONS', headers: {
                     Origin: origin, 'Access-Control-Request-Method': method,
                     'Access-Control-Request-Headers': 'authorization,content-type',

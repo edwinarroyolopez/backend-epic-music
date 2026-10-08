@@ -2,8 +2,9 @@
 
 Node 22.12+ recomendado. Instalar con `npm install`; configurar localmente
 `MONGODB_URI`, `JWT_SECRET` y las credenciales del proveedor elegido. No incluir
-sus valores en logs o commits. `npm start` escucha en 7000 (o `PORT`) después
-de conectar Mongo y crear/verificar los índices de playlists. `npm run dev` usa nodemon.
+sus valores en logs o commits. `npm start` abre HTTP en `0.0.0.0:PORT` (7000 por
+defecto) e inicializa Mongo e índices. `/health` solo responde 200 al terminar
+esa inicialización. `npm run dev` usa nodemon.
 
 ## Rutas
 
@@ -15,7 +16,8 @@ de conectar Mongo y crear/verificar los índices de playlists. `npm run dev` usa
 - Auth: POST `/auth/signup`, POST `/auth/login`, GET `/auth/me` con JWT.
 - GET `/auth/providers`: correo true, OAuth false.
 - GET `/health`: 200 y `{success:true,data:{database:"connected"}}` cuando
-  Mongo está conectado; 503 cuando no. No comprueba credenciales/proveedores IA.
+  Mongo e índices están listos; incluye `data.ready:true`. Devuelve 503 UNAVAILABLE
+  con `data.ready:false` durante inicialización/fallo. No comprueba proveedores IA.
 - Playlists: todas con Bearer JWT + cuenta existente activa:
   GET/POST `/playlists`; GET/PATCH/DELETE `/playlists/:playlistId`;
   POST `/playlists/:playlistId/songs`;
@@ -55,9 +57,27 @@ Contrato completo: `../ai/02_CONTRACTS.md`.
 
 API pública configurada para el frontend:
 `https://backend-epic-music-production.up.railway.app`.
-Railway debe ejecutar `npm start`, disponer de MONGODB_URI/JWT_SECRET/proveedor
-válidos y dirigir tráfico al puerto `PORT` asignado al servicio. El arranque
-espera la conexión Mongo y la inicialización del índice de playlists.
+`railway.json` configura `npm start`, healthcheck `/health` (120s) y hasta tres
+reinicios ante salida fallida. Railway debe disponer de MONGODB_URI/JWT_SECRET/
+proveedor válidos y dirigir tráfico al mismo `PORT` asignado al servicio.
+El puerto se abre explícitamente en `0.0.0.0` antes de inicializar Mongo.
+
+Mientras Mongo/índices no estén listos, `/auth/providers` y OPTIONS responden
+normalmente, y login/signup/me/playlists responden 503 UNAVAILABLE con CORS
+(me/playlists sin JWT conservan 401). Así no se confunde un error de base de datos
+con un bloqueo CORS ni se dejan operaciones esperando el buffer de Mongoose.
+El servidor registra el tipo de error de inicialización sin URIs ni credenciales.
+Un fallo inicial mantiene HTTP diagnóstico en 503, sin bucle de reconexión propio:
+tras corregir las variables/conectividad, reiniciar/republicar el servicio.
+El healthcheck impide considerar listo ese deployment hasta recibir 200.
+
+En los logs se distinguen dos eventos:
+1. `API Música Épica escuchando en puerto ...`: HTTP disponible.
+2. `API lista: MongoDB e índices inicializados`: servicio listo para login/playlists.
+
+Si sigue el 502 de railway-hikari, verificar que el deploy activo incluye estos
+cambios, su rama de origen y el Target Port del dominio; abrir el puerto no corrige
+por sí solo una asignación de puerto o una configuración remota errónea.
 
 CORS permite `https://musica-epica-ed.netlify.app`, los deploys/previews/ramas
 `https://<prefijo>--musica-epica-ed.netlify.app` y localhost de desarrollo.

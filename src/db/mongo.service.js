@@ -1,14 +1,14 @@
 import mongoose from "mongoose";
 
 export const connectMongo = async () => {
-
-    try {
-        await mongoose.connect(process.env.MONGODB_URI);
-        console.log("MongoDB conectado correctamente!")
-    } catch (error) {
-        console.log("Error conectando a MongoDB");
-        console.error(error.name)
-        process.exit(1);
+    if (!process.env.MONGODB_URI?.trim()) {
+        const error = new Error('MONGODB_URI no configurada');
+        error.name = 'MongoConfigurationError';
+        throw error;
     }
-
+    await mongoose.connect(process.env.MONGODB_URI, {
+        serverSelectionTimeoutMS: 10000,
+        connectTimeoutMS: 10000,
+    });
+    console.log('MongoDB conectado correctamente!');
 }

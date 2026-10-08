@@ -60,9 +60,18 @@ test('production entrypoint starts with isolated Mongo and responds to health', 
                 if (match) { clearTimeout(timer); resolve(match[1]); }
             });
         });
-        const response = await fetch(`http://127.0.0.1:${port}/health`);
+        // TCP is available before Mongo/indices. Readiness must eventually be 200.
+        let response;
+        for (let attempt = 0; attempt < 100; attempt++) {
+            response = await fetch(`http://127.0.0.1:${port}/health`);
+            if (response.status === 200) break;
+            assert.equal(response.status, 503);
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
         assert.equal(response.status, 200);
-        assert.equal((await response.json()).data.database, 'connected');
+        const health = await response.json();
+        assert.equal(health.data.database, 'connected');
+        assert.equal(health.data.ready, true);
     } finally {
         const exited = new Promise(resolve => child.once('exit', resolve));
         child.kill('SIGTERM');
