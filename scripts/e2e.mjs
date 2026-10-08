@@ -1,0 +1,244 @@
+// Local-only integration harness: actual Express/Mongoose/auth + isolated mongod.
+// Only callAI is injected. No runtime mock switch exists in the application.
+import { before, after, test } from 'node:test';
+import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
+import mongoose from 'mongoose';
+import { MongoMemoryServer } from 'mongodb-memory-server';
+import { chromium, expect } from '@playwright/test';
+import { createServer } from '../../frontend-epic-music/node_modules/vite/dist/node/index.js';
+import { createApp } from '../src/app.js';
+import { searchSimilarSongs } from '../src/services/music.service.js';
+import { Playlist } from '../src/models/playlist.model.js';
+import { User } from '../src/models/user.model.js';
+
+let mongo, server, vite, browser, base, ui;
+const requests = [], pageErrors = [];
+const fragment = 'Synthetic lyrics fragment for integration tests';
+const mockAI = async ({ messages, provider }) => {
+    const data = JSON.parse(messages[1].content);
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const content = data.lyrics?.includes('notfound') ? { found: false } : data.lyrics ?
+        { found: true, confidence: .9, song: { title: 'Synthetic Source', artist: 'Test Artist', genre: 'Test', album: 'Test Album', releaseYear: 2020 } } :
+        { recommendations: Array.from({ length: 11 }, (_, i) => ({ title: `Synthetic Song ${i + 1}`, artist: 'Test Artist', genre: 'Test', reason: 'Synthetic instrumentation comparison' })) };
+    return { provider, model: 'deterministic-test', content: JSON.stringify(content) };
+};
+before(async () => {
+    process.env.JWT_SECRET = 'isolated-e2e-test-secret';
+    process.env.MUSIC_ENABLE_FALLBACK = 'false';
+    mongo = await MongoMemoryServer.create();
+    await mongoose.connect(mongo.getUri(), { dbName: 'epic_e2e_only' });
+    await Promise.all([Playlist.init(), User.init()]);
+    server = createApp({ search: input => searchSimilarSongs(input, { callAI: mockAI }) }).listen(0, '127.0.0.1');
+    await new Promise(resolve => server.once('listening', resolve));
+    base = `http://127.0.0.1:${server.address().port}`;
+    process.env.VITE_API_URL = base;
+    process.env.VITE_AI_TIMEOUT = '800';
+    const root = fileURLToPath(new URL('../../frontend-epic-music', import.meta.url));
+    vite = await createServer({ root, server: { host: '127.0.0.1', port: 5173, strictPort: true }, logLevel: 'error' });
+    await vite.listen();
+    ui = 'http://127.0.0.1:5173';
+    browser = await chromium.launch({ headless: true });
+});
+after(async () => {
+    await browser?.close();
+    await vite?.close();
+    if (server) await new Promise(resolve => server.close(resolve));
+    await mongoose.disconnect();
+    await mongo?.stop();
+});
+async function pageFor(width = 1280) {
+    const context = await browser.newContext({ viewport: { width, height: 900 } });
+    const page = await context.newPage();
+    page.setDefaultTimeout(7000);
+    page.on('pageerror', error => pageErrors.push(error.message));
+    page.on('request', req => { if (req.url().startsWith(base)) requests.push(new URL(req.url()).pathname); });
+    await page.goto(ui);
+    return page;
+}
+async function register(page, suffix) {
+    await page.getByRole('button', { name: 'Crear cuenta', exact: true }).click();
+    await page.getByLabel('Nombre para mostrar').fill(`Test ${suffix}`);
+    await page.getByRole('textbox', { name: 'Nombre de usuario', exact: true }).fill(`e2e_${suffix}`);
+    await page.getByRole('textbox', { name: 'Correo electrónico', exact: true }).fill(`${suffix}@example.test`);
+    await page.getByLabel('Teléfono').fill(suffix === 'a' ? '1234567890' : '1234567891');
+    await page.locator('#auth-password').fill('Test-only-Password123!');
+    await page.getByRole('button', { name: 'Crear cuenta y entrar', exact: true }).click();
+    await expect(page.getByLabel('Fragmento de letra')).toBeVisible();
+}
+async function login(page, suffix) {
+    await page.getByRole('textbox', { name: 'Correo electrónico', exact: true }).fill(`${suffix}@example.test`);
+    await page.locator('#auth-password').fill('Test-only-Password123!');
+    await page.getByRole('button', { name: 'Entrar', exact: true }).last().click();
+    await expect(page.getByLabel('Fragmento de letra')).toBeVisible();
+}
+
+test('browser: explicit search → selection → login → persistent playlist and complete management', { timeout: 60000 }, async () => {
+    const page = await pageFor();
+    const beforeSearch = requests.filter(p => p === '/search-songs').length;
+    await page.getByLabel('Fragmento de letra').fill(fragment);
+    await page.waitForTimeout(350);
+    assert.equal(requests.filter(p => p === '/search-songs').length, beforeSearch);
+    await page.getByRole('button', { name: 'Buscar canciones similares', exact: true }).click();
+    await expect(page.getByRole('checkbox')).toHaveCount(12);
+    assert.equal(requests.filter(p => p === '/search-songs').length, beforeSearch + 1);
+    await page.getByRole('checkbox').nth(0).check();
+    await page.getByRole('checkbox').nth(1).check();
+    await page.getByRole('checkbox').nth(2).check();
+    await expect(page.getByText('3 canciones seleccionadas', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Inicia sesión para guardar playlists' }).click();
+    await register(page, 'a');
+    await expect(page.getByText('3 canciones seleccionadas', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Guardar selección', exact: true }).click();
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await expect(page.getByLabel('Nombre de playlist')).toBeFocused();
+    await page.getByLabel('Nombre de playlist').fill('E2E playlist');
+    await page.getByRole('button', { name: 'Crear con selección' }).dblclick();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    assert.equal(await Playlist.countDocuments({ name: 'E2E playlist' }), 1);
+    await page.getByRole('button', { name: 'Guardar selección', exact: true }).click();
+    await page.getByRole('button', { name: 'Añadir a existente' }).click();
+    await page.getByRole('combobox').selectOption({ label: 'E2E playlist (3)' });
+    await page.getByRole('button', { name: 'Añadir canciones', exact: true }).click();
+    await expect(page.getByText('Guardado: 0 añadidas; 3 duplicadas omitidas.', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Mis playlists', exact: true }).click();
+    await page.getByRole('link', { name: 'E2E playlist', exact: true }).click();
+    const detailUrl = page.url();
+    await expect(page.locator('.playlist-songs > li')).toHaveCount(3);
+    await page.reload();
+    await expect(page.locator('.playlist-songs > li')).toHaveCount(3);
+    await page.getByRole('button', { name: 'Editar playlist', exact: true }).click();
+    await page.getByLabel('Nombre de playlist').fill('Renamed E2E');
+    await page.getByLabel('Descripción (opcional)').fill('Persistent description');
+    await page.getByRole('button', { name: 'Guardar cambios', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Renamed E2E', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Subir Synthetic Song 2', exact: true }).click();
+    await expect(page.locator('.playlist-songs > li').nth(1)).toContainText('Synthetic Song 2');
+    await page.getByRole('button', { name: 'Quitar Synthetic Song 1', exact: true }).click();
+    await expect(page.locator('.playlist-songs > li')).toHaveCount(2);
+    await page.getByRole('button', { name: 'Eliminar playlist', exact: true }).click();
+    await page.getByRole('button', { name: 'Cancelar', exact: true }).click();
+    await expect(page.locator('.playlist-songs > li')).toHaveCount(2);
+    await page.getByRole('button', { name: 'Abrir menú de perfil' }).click();
+    await page.getByRole('menuitem', { name: /Cerrar sesión/ }).click();
+    await expect(page.getByText('Inicia sesión para guardar playlists', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Iniciar sesión', exact: true }).last().click();
+    await login(page, 'a');
+    await page.goto(detailUrl);
+    await expect(page.locator('.playlist-songs > li')).toHaveCount(2);
+    await expect(page.getByText('Persistent description', { exact: true })).toBeVisible();
+    const pageB = await pageFor();
+    await pageB.getByRole('button', { name: 'Iniciar sesión', exact: true }).click();
+    await register(pageB, 'b');
+    await pageB.goto(detailUrl);
+    await expect(pageB.getByText('El recurso no está disponible.', { exact: true })).toBeVisible();
+    await expect(pageB.locator('.playlist-songs > li')).toHaveCount(0);
+    await pageB.context().close();
+    await page.getByRole('button', { name: 'Eliminar playlist', exact: true }).click();
+    await page.getByRole('button', { name: 'Confirmar eliminación', exact: true }).click();
+    await expect(page.getByText('Todavía no tienes playlists.', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Crear playlist', exact: true }).click();
+    await page.getByLabel('Nombre de playlist').fill('Empty E2E');
+    await page.getByRole('dialog').getByRole('button', { name: 'Crear playlist', exact: true }).click();
+    await page.getByRole('link', { name: 'Empty E2E' }).click();
+    await expect(page.getByText('Esta playlist está vacía.', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Descubrir y añadir canciones' }).click();
+    await page.getByLabel('Fragmento de letra').fill(fragment);
+    await page.getByRole('button', { name: 'Buscar canciones similares', exact: true }).click();
+    await expect(page.getByRole('checkbox')).toHaveCount(12);
+    await page.getByRole('checkbox').first().check();
+    await page.getByRole('button', { name: 'Guardar selección', exact: true }).click();
+    await page.getByRole('button', { name: 'Añadir a existente' }).click();
+    await page.getByRole('combobox').selectOption({ label: 'Empty E2E (0)' });
+    await page.getByRole('button', { name: 'Añadir canciones', exact: true }).click();
+    await expect(page.getByText('Guardado: 1 añadidas; 0 duplicadas omitidas.', { exact: true })).toBeVisible();
+    assert.equal(await Playlist.countDocuments({ name: 'Renamed E2E' }), 0);
+    assert.ok(!requests.some(p => p === '/songs' || p === '/recommend'));
+    assert.deepEqual(pageErrors, []);
+    await page.context().close();
+});
+
+test('browser regression: es/en, dark/light/custom, focus, health, expired session', { timeout: 45000 }, async () => {
+    const page = await pageFor(390);
+    await page.goto(`${ui}/#/ajustes`);
+    for (const [label, value] of [['Claro', 'light'], ['Personalizado', 'custom'], ['Oscuro', 'dark']]) {
+        await page.getByRole('radio', { name: new RegExp(`^${label}`) }).click();
+        await expect(page.locator('html')).toHaveAttribute('data-theme', value);
+        await page.getByRole('button', { name: 'Buscar', exact: true }).click();
+        const colors = await page.getByLabel('Fragmento de letra').evaluate(element => {
+            const style = getComputedStyle(element);
+            return { text: style.color, background: style.backgroundColor };
+        });
+        assert.notEqual(colors.text, colors.background);
+        assert.notEqual(colors.background, 'rgba(0, 0, 0, 0)');
+        assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+        await page.goto(`${ui}/#/ajustes`);
+    }
+    await page.getByRole('button', { name: 'Comprobar conexión' }).click();
+    await expect(page.getByText('API y MongoDB conectados (no comprueba proveedores IA)', { exact: true })).toBeVisible();
+    await page.getByRole('radio', { name: 'English', exact: true }).click();
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    await expect(page.getByLabel('Lyrics fragment')).toBeVisible();
+    await page.getByRole('button', { name: 'My playlists', exact: true }).click();
+    await expect(page.getByText('Sign in to save playlists', { exact: true })).toBeVisible();
+    await page.reload();
+    await expect(page.getByRole('heading', { name: 'My playlists' })).toBeVisible();
+    await page.goto(`${ui}/#/ajustes`);
+    await page.getByRole('radio', { name: 'Español', exact: true }).click();
+    await page.getByRole('button', { name: 'Iniciar sesión', exact: true }).click();
+    await login(page, 'a');
+    await page.getByRole('button', { name: 'Mis playlists', exact: true }).click();
+    await page.getByRole('button', { name: 'Crear playlist', exact: true }).click();
+    await expect(page.getByLabel('Nombre de playlist')).toBeFocused();
+    await page.getByLabel('Nombre de playlist').fill('Never committed');
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Crear playlist', exact: true })).toBeFocused();
+    await page.route('**/playlists', route => route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ success: false, error: { code: 'UNAUTHORIZED', message: 'expired' } }) }));
+    await page.getByRole('button', { name: 'Buscar', exact: true }).click();
+    await page.getByRole('button', { name: 'Mis playlists', exact: true }).click();
+    await expect(page.getByText('Inicia sesión para guardar playlists', { exact: true })).toBeVisible();
+    assert.equal(await page.evaluate(() => localStorage.getItem('me:token') === null), true);
+    await expect(page.getByRole('button', { name: 'Crear playlist', exact: true })).toHaveCount(0);
+    assert.equal(await Playlist.countDocuments({ name: 'Never committed' }), 0);
+    assert.deepEqual(pageErrors, []);
+    await page.context().close();
+});
+
+test('browser mobile: demo privacy, selection reset, found:false, errors and cancellation', { timeout: 45000 }, async () => {
+    const page = await pageFor(390);
+    await page.getByRole('button', { name: 'Iniciar sesión', exact: true }).click();
+    await page.getByRole('button', { name: 'Entrar sin cuenta (demostración)' }).click();
+    const privateBefore = requests.filter(p => p.startsWith('/playlists')).length;
+    await page.getByRole('button', { name: 'Mis playlists', exact: true }).click();
+    await expect(page.getByText('Inicia sesión para guardar playlists', { exact: true })).toBeVisible();
+    assert.equal(requests.filter(p => p.startsWith('/playlists')).length, privateBefore);
+    await page.getByRole('button', { name: 'Buscar', exact: true }).click();
+    await page.getByLabel('Fragmento de letra').fill(fragment);
+    await page.getByRole('button', { name: 'Buscar canciones similares', exact: true }).click();
+    await expect(page.getByRole('checkbox')).toHaveCount(12);
+    await page.getByRole('button', { name: 'Seleccionar todas las recomendaciones' }).click();
+    await expect(page.getByText('11 canciones seleccionadas', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Limpiar selección' }).click();
+    await expect(page.getByText('0 canciones seleccionadas', { exact: true })).toBeVisible();
+    await page.getByRole('checkbox').first().focus();
+    await page.keyboard.press('Space');
+    await expect(page.getByRole('checkbox').first()).toBeChecked();
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await page.getByLabel('Fragmento de letra').fill('notfound synthetic fragment for tests');
+    await page.getByRole('button', { name: 'Buscar canciones similares', exact: true }).click();
+    await expect(page.getByText(/No se identificó la canción/)).toBeVisible();
+    await expect(page.getByRole('checkbox')).toHaveCount(0);
+    await page.route('**/search-songs', route => route.fulfill({ status: 502, contentType: 'application/json', body: JSON.stringify({ success: false, error: 'provider failed' }) }));
+    await page.getByRole('button', { name: 'Buscar canciones similares', exact: true }).click();
+    await expect(page.getByRole('alert')).toContainText('La IA no pudo');
+    await page.unroute('**/search-songs');
+    await page.route('**/search-songs', async route => { await new Promise(resolve => setTimeout(resolve, 1500)); await route.abort().catch(() => {}); });
+    await page.getByRole('button', { name: 'Buscar canciones similares', exact: true }).click();
+    await expect(page.getByRole('alert')).toContainText('Se agotó el tiempo');
+    await page.getByRole('button', { name: 'Buscar canciones similares', exact: true }).click();
+    await page.getByRole('button', { name: 'Cancelar', exact: true }).click();
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await page.context().close();
+});

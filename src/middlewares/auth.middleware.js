@@ -7,6 +7,7 @@ export const authenticateToken = (req, res, next) => {
         if (!authHeader) {
             return res.status(401).json({
                 success: false,
+                error: { code: 'UNAUTHORIZED', message: 'Token requerido' },
                 message: "Token requerido"
             });
         }
@@ -16,6 +17,7 @@ export const authenticateToken = (req, res, next) => {
         if (type !== "Bearer" || !token) {
             return res.status(401).json({
                 success: false,
+                error: { code: 'UNAUTHORIZED', message: 'Formato de token inválido' },
                 message: "Formato de token inválido"
             });
         }
@@ -33,12 +35,14 @@ export const authenticateToken = (req, res, next) => {
         if (error.name === "TokenExpiredError") {
             return res.status(401).json({
                 success: false,
+                error: { code: 'UNAUTHORIZED', message: 'Token expirado' },
                 message: "Token expirado"
             });
         }
 
         return res.status(401).json({
             success: false,
+            error: { code: 'UNAUTHORIZED', message: 'Token inválido' },
             message: "Token inválido"
         });
     }

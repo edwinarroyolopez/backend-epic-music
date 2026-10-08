@@ -1,6 +1,6 @@
 import { MusicRecommendationError, searchSimilarSongs } from "../services/music.service.js";
 
-export const searchSongsController = async (req, res) => {
+export const createSearchSongsController = (search = searchSimilarSongs) => async (req, res) => {
     const { lyrics, artist, genre, provider } = req.body ?? {};
     if (typeof lyrics !== "string" || lyrics.trim().length < 15 || lyrics.length > 12000) {
         return res.status(400).json({ success: false, error: "lyrics debe contener entre 15 y 12000 caracteres" });
@@ -13,7 +13,7 @@ export const searchSongsController = async (req, res) => {
         return res.status(400).json({ success: false, error: "provider debe ser gemini o deepseek" });
     }
     try {
-        const data = await searchSimilarSongs({ lyrics, artist, genre, provider });
+        const data = await search({ lyrics, artist, genre, provider });
         return res.status(200).json({ success: true, data });
     } catch (error) {
         console.error("Music search error:", error.name);
@@ -24,3 +24,5 @@ export const searchSongsController = async (req, res) => {
         });
     }
 };
+
+export const searchSongsController = createSearchSongsController();

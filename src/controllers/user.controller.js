@@ -81,7 +81,7 @@ const signupController = async (req, res) => {
 
         console.error(
             "Signup error:",
-            error
+            error.name
         );
 
 
@@ -199,7 +199,7 @@ const loginController = async (req, res) => {
 
         console.error(
             "Login error:",
-            error
+            error.name
         );
 
 

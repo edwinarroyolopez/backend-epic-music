@@ -1,10 +1,13 @@
 {
   "name": "backend-epic-music",
   "version": "1.0.0",
+  "type": "module",
   "main": "server.js",
   "scripts": {
     "dev": "nodemon src/server.js",
-    "start": "node src/server.js"
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js",
+    "test:e2e": "node --test scripts/e2e.mjs"
   },
   "keywords": [],
   "author": "",
@@ -19,6 +22,8 @@
     "mongoose": "^9.11.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.0",
+    "mongodb-memory-server": "^11.3.0",
     "nodemon": "^3.1.14"
   }
 }

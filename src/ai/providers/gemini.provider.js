@@ -60,6 +60,7 @@ export class GeminiProvider {
 
         const response = await fetch(url, {
             method: "POST",
+            signal: AbortSignal.timeout(45000),
 
             headers: {
                 "Content-Type": "application/json",
