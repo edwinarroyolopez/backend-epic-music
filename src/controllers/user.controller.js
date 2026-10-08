@@ -5,7 +5,9 @@ import {
 
 import {
     comparePassword,
-    generateToken
+    generateToken,
+    getTokenConfiguration,
+    AuthConfigurationError
 } from "../services/auth.service.js";
 
 
@@ -19,15 +21,11 @@ const signupController = async (req, res) => {
             phone,
             email,
             password
-        } = req.body;
+        } = req.body ?? {};
 
 
         if (
-            !username ||
-            !name ||
-            !phone ||
-            !email ||
-            !password
+            [username, name, phone, email, password].some(value => typeof value !== 'string' || !value.trim())
         ) {
             return res.status(400).json({
                 success: false,
@@ -46,11 +44,14 @@ const signupController = async (req, res) => {
         }
 
 
+        // Validate JWT before writing a user, avoiding failed registrations
+        // that silently leave an account behind when signing is unavailable.
+        getTokenConfiguration();
         const user = await createUser({
             username,
             name,
             phone,
-            email,
+            email: email.trim(),
             password
         });
 
@@ -79,6 +80,11 @@ const signupController = async (req, res) => {
 
     } catch (error) {
 
+        if (error instanceof AuthConfigurationError) {
+            console.error(`Signup unavailable: ${error.reason}`);
+            return res.status(503).json({ success: false, code: error.code, message: error.message });
+        }
+
         console.error(
             "Signup error:",
             error.name
@@ -98,7 +104,7 @@ const signupController = async (req, res) => {
 
         return res.status(500).json({
             success: false,
-            message: error.message
+            message: 'Error interno del servidor'
         });
 
     }
@@ -108,16 +114,17 @@ const signupController = async (req, res) => {
 
 
 const loginController = async (req, res) => {
+    let phase = 'validation';
 
     try {
 
         const {
             email,
             password
-        } = req.body;
+        } = req.body ?? {};
 
 
-        if (!email || !password) {
+        if ([email, password].some(value => typeof value !== 'string' || !value.trim())) {
 
             return res.status(400).json({
                 success: false,
@@ -128,8 +135,10 @@ const loginController = async (req, res) => {
         }
 
 
+        getTokenConfiguration();
+        phase = 'lookup';
         const user =
-            await findUserByEmail(email);
+            await findUserByEmail(email.trim());
 
 
         if (!user) {
@@ -154,6 +163,7 @@ const loginController = async (req, res) => {
         }
 
 
+        phase = 'verify_password';
         const passwordIsValid =
             await comparePassword(
                 password,
@@ -172,6 +182,7 @@ const loginController = async (req, res) => {
         }
 
 
+        phase = 'sign_token';
         const token =
             generateToken(user);
 
@@ -197,8 +208,13 @@ const loginController = async (req, res) => {
 
     } catch (error) {
 
+        if (error instanceof AuthConfigurationError) {
+            console.error(`Login unavailable: ${error.reason}`);
+            return res.status(503).json({ success: false, code: error.code, message: error.message });
+        }
+
         console.error(
-            "Login error:",
+            `Login error: phase=${phase}`,
             error.name
         );
 

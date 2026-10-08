@@ -11,6 +11,7 @@ import mongoose from "mongoose";
 import { findUserById } from "./services/user.service.js";
 import { createSearchSongsController } from "./controllers/music.controller.js";
 import { playlistRoutes } from './routes/playlist.routes.js';
+import { getAuthAvailability } from './services/auth.service.js';
 
 dotenv.config();
 
@@ -79,7 +80,7 @@ app.get('/health', (_req, res) => {
         ...(!ready && { error: { code: 'UNAVAILABLE', message: 'Base de datos o índices no disponibles' } }),
     });
 });
-app.get('/auth/providers', (_req, res) => res.json({ email: true, apple: false, google: false, spotify: false }));
+app.get('/auth/providers', (_req, res) => res.json({ ...getAuthAvailability(), apple: false, google: false, spotify: false }));
 
 app.get('/', (request, response) => {
     response.send("<h2>Esta es la API de Música Épica</h2>")

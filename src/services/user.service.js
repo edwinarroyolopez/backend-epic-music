@@ -27,9 +27,9 @@ export const createUser = async (userData) => {
 
 
     if (existingUser) {
-        throw new Error(
+        throw Object.assign(new Error(
             "El usuario, email o teléfono ya está registrado"
-        );
+        ), { code: 11000 });
     }
 
 

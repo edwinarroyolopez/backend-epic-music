@@ -14,7 +14,9 @@ esa inicialización. `npm run dev` usa nodemon.
   Identificación + 11 recomendaciones únicas, o found:false sin canciones.
   Errores 400/502. Son inferencias, no verificaciones de catálogo.
 - Auth: POST `/auth/signup`, POST `/auth/login`, GET `/auth/me` con JWT.
-- GET `/auth/providers`: correo true, OAuth false.
+- GET `/auth/providers`: correo disponible si JWT está configurado, OAuth false.
+  Si no puede emitir sesiones, devuelve email:false y emailUnavailableReason
+  (JWT_SECRET_MISSING o JWT_EXPIRES_IN_INVALID), nunca el valor de las variables.
 - GET `/health`: 200 y `{success:true,data:{database:"connected"}}` cuando
   Mongo e índices están listos; incluye `data.ready:true`. Devuelve 503 UNAVAILABLE
   con `data.ready:false` durante inicialización/fallo. No comprueba proveedores IA.
@@ -54,6 +56,25 @@ el estado antes de repetir; la adición es deduplicada, la creación no es idemp
 Contrato completo: `../ai/02_CONTRACTS.md`.
 
 ## Railway y CORS de Netlify
+
+### Configuración de sesiones
+
+En Railway → servicio backend → Variables, `JWT_SECRET` debe ser una clave
+privada no vacía. `JWT_EXPIRES_IN` es opcional (por defecto `7d`); usar valores
+como `7d` o `1h`, sin comillas literales añadidas en el panel. No poner estas
+variables en Netlify/VITE ni compartir sus valores.
+
+Un JWT no configurable devuelve **503 AUTH_UNAVAILABLE** antes de consultar
+credenciales o crear una cuenta. Signup no deja una cuenta creada por fallar la
+firma del token. `/health` comprueba Mongo/índices; `/auth/providers` informa
+separadamente de la disponibilidad de la autenticación.
+
+Las cuentas heredadas sin un hash bcrypt válido reciben401, nunca se permite
+autenticación con contraseña en texto plano ni se modifica su registro de forma
+automática. Las excepciones de login registran solo fase/tipo (sin correo,
+contraseña, hash, JWT ni URI). Registro duplicado devuelve409.
+
+### Red y despliegue
 
 API pública configurada para el frontend:
 `https://backend-epic-music-production.up.railway.app`.
