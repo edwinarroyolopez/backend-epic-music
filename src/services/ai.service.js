@@ -6,30 +6,16 @@ export const generateAIResponse = async ({
     provider,
     temperature,
     maxTokens,
+    jsonMode = false,
 }) => {
-    if (!Array.isArray(messages)) {
-        throw new Error(
-            "messages debe ser un array"
-        );
+    if (!Array.isArray(messages) || messages.length === 0) {
+        throw new Error("messages debe ser un array no vacío");
     }
-
-    if (messages.length === 0) {
-        throw new Error(
-            "Debes enviar al menos un mensaje"
-        );
-    }
-
-    const aiProvider = createAIProvider(
-        provider || aiConfig.provider
-    );
-
-    const response = await aiProvider.chat({
+    const aiProvider = createAIProvider(provider || aiConfig.provider);
+    return aiProvider.chat({
         messages,
-        temperature:
-            temperature ?? aiConfig.temperature,
-        maxTokens:
-            maxTokens ?? aiConfig.maxTokens,
+        temperature: temperature ?? aiConfig.temperature,
+        maxTokens: maxTokens ?? aiConfig.maxTokens,
+        jsonMode,
     });
-
-    return response;
 };

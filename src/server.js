@@ -8,6 +8,7 @@ import aiRoutes from "./routes/ai.routes.js";
 import { loginController, signupController } from './controllers/user.controller.js';
 import { connectMongo } from "./db/mongo.service.js";
 import { findUserById } from "./services/user.service.js";
+import { searchSongsController } from "./controllers/music.controller.js";
 
 dotenv.config();
 
@@ -139,6 +140,9 @@ app.get(
 );
 
 app.use("/ai", aiRoutes);
+
+/* music things */
+app.post('/search-songs', searchSongsController)
 
 const startServer = async () => {
 
