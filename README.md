@@ -8,7 +8,7 @@ esa inicialización. `npm run dev` usa nodemon.
 
 ## Rutas
 
-- Público: `POST /search-songs` recibe `{lyrics,artist?,genre?,provider?}`;
+- Público (JWT opcional): `POST /search-songs` recibe `{lyrics,artist?,genre?,provider?,searchId?}`;
   letra 15–12000 caracteres, pistas ≤200, proveedor gemini|deepseek. Respuesta
   `{success:true,data:{found,song,recommendations,count,ai,notice}}`.
   Identificación + 11 recomendaciones únicas, o found:false sin canciones.
@@ -25,6 +25,40 @@ esa inicialización. `npm run dev` usa nodemon.
   POST `/playlists/:playlistId/songs`;
   DELETE `/playlists/:playlistId/songs/:songId`;
   PATCH `/playlists/:playlistId/songs/order`.
+
+## Enlaces y letra completa
+
+Cada canción de búsqueda añade `links:{youtube,spotify,appleMusic}`. Son URLs de
+búsqueda por título+artista, no IDs o enlaces directos de catálogo verificados.
+El detalle/replay de historial regenera esos enlaces desde el snapshot existente;
+no se necesitan nuevas columnas ni guardar URLs en playlists.
+
+`GET /songs/lyrics?title=...&artist=...` consulta LRCLIB solo por estos metadatos,
+sin fragmento del usuario ni Authorization externo. Ambos strings1–200 caracteres.
+Respuesta `{success:true,data:{status,title,artist,lyrics,source,emotions,emotionAnalysis}}`:
+status `available|not_found|instrumental`, lyrics string o null, source LRCLIB.
+Solo se devuelve letra si coincide título/artista normalizados; no se genera con
+IA. La disponibilidad del texto depende de la fuente externa.
+
+En el mismo request, la letra disponible se analiza con el proveedor IA configurado.
+`emotions:[{code,score}]` contiene3 códigos distintos, ordenados, enteros positivos
+que suman100. Códigos: joy/sadness/anger/fear/love/hope/nostalgia/calm.
+Son pesos relativos entre las3 emociones, no intensidad absoluta ni análisis de
+audio. `emotionAnalysis` informa status `estimated|unavailable|insufficient_evidence|not_applicable`,
+method `ai_lyrics`,scope `lyrics`,scale `relative_percent`,version1,provider/model,
+callCount/elapsedMs y sampled. Máximo1 llamada/500 tokens/10s, sin fallback;
+letras >12000 caracteres usan muestra del principio/final. Sin letra no hay IA.
+Si el proveedor no está disponible o el JSON no es válido, se devuelven letra y
+HTTP200 con emotions[]/unavailable; nunca se inventan métricas.
+
+Límites:30/min por IP/proceso, timeout8s, cuerpo256KiB/letra60000 caracteres,
+host HTTPS fijo sin redirecciones. 400 VALIDATION_ERROR;503 LYRICS_UNAVAILABLE;
+429 RATE_LIMITED. Cache-Control:no-store; letras no se guardan en Mongo/logs ni
+historial. La consulta de letra no requiere Mongo; las emociones usan credenciales
+del proveedor configurado en backend. Tests inyectan fetch LRCLIB y callAI
+deterministas; no descargan letras reales ni consumen proveedores de pago.
+Contrato y evidencia: `../ai/MUSIC_DETAILS_TABLES_PLAN.md` y
+`../ai/MUSIC_DETAILS_TABLES_EVIDENCE.md`.
 
 ## Ejemplo sin datos privados
 
@@ -54,6 +88,72 @@ concurrente. No requiere replica set/transactions; crear con canciones es una
 el estado antes de repetir; la adición es deduplicada, la creación no es idempotente.
 
 Contrato completo: `../ai/02_CONTRACTS.md`.
+
+## Búsqueda tolerante, directorio global e historial
+
+Contrato aditivo y decisiones: `../ai/SEARCH_INTELLIGENCE_MASTER_PLAN.md`.
+Evidencia local: `../ai/SEARCH_INTELLIGENCE_EVIDENCE.md`.
+
+- `input.original/resolved`, `input.corrections`, `input.needsConfirmation` e
+  `input.directoryStatus` explican la resolución textual sin contener letras.
+  Coincidencia exacta/alias/fold/fuzzy conservador; prefijos de artista inequívocos
+  (>=6 caracteres, >=75% del nombre y margen frente a otros candidatos) con
+  source `catalog_prefix`. Los prefijos no se guardan como alias permanentes.
+  Géneros extensibles en
+  `src/services/search-normalization.js`. Ambigüedad no aplica sustituciones.
+- La letra es primaria. Si el artista no se resuelve, un fallo permite reconsiderar
+  el nombre como fragmento opcional (`identify_relaxed_artist`) antes de quitar
+  todas las pistas (`identify_without_hints`). La recuperación tiene prioridad
+  sobre cambiar de proveedor cuando el nombre está incompleto.
+  Máximo3 llamadas de identificación (incluye fallback) +2 de recomendaciones;
+  `ai.callCount`, `ai.attempts`, `ai.totalElapsedMs` y `ai.recommendationGenre`
+  muestran coste en llamadas/latencia/contexto. Máximo9400 tokens de salida
+  solicitados (3×1000 +2×3200), no un coste monetario ni precisión garantizada.
+  Un género identificado contradictorio prevalece sobre la pista.
+  Un miss válido tras completar la recuperación no se convierte en502 por fallar
+  un proveedor opcional posterior: se conserva found:false y el error en attempts.
+  Fallos reales sin ningún ciclo completado siguen siendo502.
+- Colección `artists` global sin propietario: identidad única, alias limitados,
+  índices multikey de búsqueda y origen `curated|model_inferred`. Se aprenden
+  el artista de **cada búsqueda found:true** antes de responder, incluso cuando
+  coincide exactamente con la pista escrita. Se usa el mismo umbral de identificación
+  (>=.6), sin un filtro secundario.9. Upsert por identidad del nombre devuelto, sin
+  fusionar nombres distintos mediante fuzzy. No se promueven pistas sin resultado,
+  recomendaciones ni identificaciones rechazadas. Esto no es un catálogo
+  verificado; no hay seeds de prueba en producción.
+- `GET /artists/suggest?q=...&limit=6`: q2–200, limit1–10, público para cuentas
+  e invitados; rango indexado literal + candidatos por trigramas, <=81 por query,
+  maxTimeMS1000. 400 VALIDATION_ERROR, 429 RATE_LIMITED, 503 UNAVAILABLE.
+  Cache-Control:no-cache obliga a revalidar sugerencias anteriores tras nuevas altas.
+- `GET /search-history?limit=20&cursor=...`, `GET /search-history/:id`,
+  `DELETE /search-history/:id`: JWT/cuenta activa, owner exclusivo del JWT;
+  ID ajeno/inexistente404, inválido400. Paginación estable fecha+ID, limit1–50,
+  Cache-Control:no-store. Snapshot de canción y11 recomendaciones, sin letras,
+  hashes de letras, tokens ni respuestas completas del proveedor.
+- Historial en `searchhistories`: TTL90 días y recorte a200 entradas completadas
+  por cuenta. Reservas pendientes no se eliminan durante trabajo; a los5min se
+  muestran INTERRUPTED y se consolidan al siguiente search. Índices inicializados
+  antes de readiness: owner/requestId único, owner/fecha/id y expiresAt TTL.
+- `searchId` UUIDv4 permite repetir la misma operación autenticada: reserva
+  pendiente409 SEARCH_IN_PROGRESS, completada devuelve snapshot sin otra IA.
+  La primera petición con ese ID gana, incluso si se cambia el body. Sin ID se
+  genera uno; invitados no tienen historial/idempotencia persistente en servidor.
+- `data.history.status`: saved solo tras confirmar escritura, local_only para
+  invitados, unavailable ante fallo Mongo/guardado. Error de proveedor502 añade
+  history/input/code y también puede persistirse. Validación400 no crea historial.
+  JWT presente inválido401; usuario inactivo403. Si Mongo no está listo, un JWT
+  con firma válida no basta para asociar una cuenta: búsqueda pública continúa
+  con history unavailable. Cabeceras de owner/userId nunca asignan historial.
+- Cancelar el HTTP no garantiza detener el proveedor: una búsqueda aceptada puede
+  completar su entrada. Si guardar falla, el resultado musical se conserva.
+  Directorio/historial503 no se presentan como falta de coincidencia musical.
+- Rate limits por proceso/IP de conexión: sugerencias60/min, búsqueda20/min,
+  historial120/min; mapa máximo5000 IPs por limitador, sin confiar X-Forwarded-For.
+  Tras un proxy los visitantes pueden compartir cupo; para múltiples instancias
+  se requiere un limitador compartido y configuración explícita de proxies fiables.
+
+Cambios de esquema aditivos: no migran User/Playlist. Rollback local de código
+puede dejar ambas colecciones sin consumidores; no requiere borrar datos.
 
 ## Railway y CORS de Netlify
 

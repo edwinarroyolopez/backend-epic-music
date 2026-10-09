@@ -12,6 +12,11 @@ import { findUserById } from "./services/user.service.js";
 import { createSearchSongsController } from "./controllers/music.controller.js";
 import { playlistRoutes } from './routes/playlist.routes.js';
 import { getAuthAvailability } from './services/auth.service.js';
+import { createArtistRoutes } from './routes/artist.routes.js';
+import { createSearchHistoryRoutes } from './routes/search-history.routes.js';
+import { optionalSearchAuth } from './middlewares/search-auth.middleware.js';
+import { rateLimit } from './middlewares/rate-limit.middleware.js';
+import { createLyricsRoutes } from './routes/lyrics.routes.js';
 
 dotenv.config();
 
@@ -25,7 +30,7 @@ const allowedOrigins = [
 // Deploy permalinks, deploy-preview-N and branch deploys of this site only.
 const netlifyPreviewOrigin = /^https:\/\/[a-z0-9](?:[a-z0-9-]*[a-z0-9])?--musica-epica-ed\.netlify\.app$/;
 
-export function createApp({ search, isReady = () => mongoose.connection.readyState === 1 } = {}) {
+export function createApp({ search, lyrics, isReady = () => mongoose.connection.readyState === 1 } = {}) {
 const app = express();
 app.locals.isReady = isReady;
 const origins = new Set([...allowedOrigins, ...(process.env.CORS_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean)]);
@@ -168,9 +173,12 @@ app.get(
 
 app.use("/ai", aiRoutes);
 app.use('/playlists', playlistRoutes);
+app.use('/artists', createArtistRoutes());
+app.use('/search-history', createSearchHistoryRoutes());
+app.use('/songs', createLyricsRoutes(lyrics));
 
 /* music things */
-app.post('/search-songs', createSearchSongsController(search));
+app.post('/search-songs', rateLimit({ limit: 20 }), optionalSearchAuth, createSearchSongsController(search));
 app.use((error, _req, res, _next) => {
     if (error.code === 'CORS_ORIGIN_DENIED') {
         return res.status(403).json({ success: false, error: { code: error.code, message: 'Origen no permitido por CORS' } });

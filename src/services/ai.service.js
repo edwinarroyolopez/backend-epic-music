@@ -7,6 +7,8 @@ export const generateAIResponse = async ({
     temperature,
     maxTokens,
     jsonMode = false,
+    signal,
+    timeoutMs,
 }) => {
     if (!Array.isArray(messages) || messages.length === 0) {
         throw new Error("messages debe ser un array no vacío");
@@ -17,5 +19,7 @@ export const generateAIResponse = async ({
         temperature: temperature ?? aiConfig.temperature,
         maxTokens: maxTokens ?? aiConfig.maxTokens,
         jsonMode,
+        signal,
+        timeoutMs,
     });
 };

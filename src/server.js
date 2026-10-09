@@ -2,6 +2,8 @@ import 'dotenv/config';
 import { createApp } from './app.js';
 import { connectMongo } from './db/mongo.service.js';
 import { Playlist } from './models/playlist.model.js';
+import { Artist } from './models/artist.model.js';
+import { SearchHistory } from './models/search-history.model.js';
 import mongoose from 'mongoose';
 
 const port = Number(process.env.PORT || 7000);
@@ -32,7 +34,7 @@ if (legacyPort > 0 && legacyPort !== server.address().port) {
 
 try {
     await connectMongo();
-    await Playlist.init();
+    await Promise.all([Playlist.init(), Artist.init(), SearchHistory.init()]);
     databaseInitialized = true;
     console.log('API lista: MongoDB e índices inicializados');
 } catch (error) {

@@ -1,3 +1,5 @@
+import { aiRequestSignal } from '../request-signal.js';
+
 export class GeminiProvider {
     constructor(config) {
         this.apiKey = config.apiKey;
@@ -16,6 +18,8 @@ export class GeminiProvider {
         messages,
         temperature = 0.7,
         maxTokens = 1500,
+        signal,
+        timeoutMs,
     }) {
         this.validateConfig();
 
@@ -60,7 +64,7 @@ export class GeminiProvider {
 
         const response = await fetch(url, {
             method: "POST",
-            signal: AbortSignal.timeout(45000),
+            signal: aiRequestSignal(signal, timeoutMs),
 
             headers: {
                 "Content-Type": "application/json",

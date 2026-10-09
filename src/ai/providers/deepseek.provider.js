@@ -1,3 +1,5 @@
+import { aiRequestSignal } from '../request-signal.js';
+
 export class DeepSeekProvider {
     constructor(config) {
         this.apiKey = config.apiKey;
@@ -17,6 +19,8 @@ export class DeepSeekProvider {
         messages,
         temperature = 0.7,
         maxTokens = 1500,
+        signal,
+        timeoutMs,
     }) {
         this.validateConfig();
 
@@ -24,7 +28,7 @@ export class DeepSeekProvider {
             `${this.baseUrl}/chat/completions`,
             {
                 method: "POST",
-                signal: AbortSignal.timeout(45000),
+                signal: aiRequestSignal(signal, timeoutMs),
 
                 headers: {
                     "Content-Type": "application/json",
