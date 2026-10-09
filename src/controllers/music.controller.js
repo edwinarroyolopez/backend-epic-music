@@ -1,6 +1,7 @@
 import { MusicRecommendationError, searchSimilarSongs } from "../services/music.service.js";
 import { randomUUID } from 'node:crypto';
 import { reserveHistory, finishHistory, serializeHistory } from '../services/search-history.service.js';
+import { attachSongReferences } from '../services/song-identity.service.js';
 
 export const createSearchSongsController = (search = searchSimilarSongs) => async (req, res) => {
     res.set('Cache-Control', 'no-store');
@@ -45,6 +46,13 @@ export const createSearchSongsController = (search = searchSimilarSongs) => asyn
     };
     try {
         const data = await search({ lyrics, artist, genre, provider });
+        if (data.found && req.app.locals.isReady()) {
+            try {
+                const [song, ...recommendations] = await attachSongReferences([data.song, ...(data.recommendations || [])]);
+                data.song = song; data.recommendations = recommendations;
+                data.songDirectory = { status: 'available' };
+            } catch { data.songDirectory = { status: 'unavailable' }; }
+        }
         data.history = await persist(data);
         return res.status(200).json({ success: true, data });
     } catch (error) {

@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { Playlist } from '../models/playlist.model.js';
+import { attachSongReferences } from './song-identity.service.js';
 
 export const LIMITS = { playlists: 100, songs: 500, batch: 100 };
 export class PlaylistError extends Error {
@@ -30,11 +31,14 @@ export const normalizedKey = (title, artist) => JSON.stringify([normalize(title)
 export function songInputs(values, allowEmpty = false) {
     if (!Array.isArray(values) || values.length > LIMITS.batch || (!allowEmpty && !values.length)) invalid();
     return values.map(value => {
-        fields(value, ['title', 'artist', 'genre', 'album', 'releaseYear', 'reason', 'originType', 'catalogVerified']);
+        fields(value, ['title', 'artist', 'genre', 'album', 'releaseYear', 'reason', 'originType', 'catalogVerified', 'songId', 'edition']);
         const title = text(value.title, 200, true), artist = text(value.artist, 200, true);
         if (!['identified', 'recommendation'].includes(value.originType)) invalid();
         if (value.catalogVerified !== undefined && value.catalogVerified !== false) invalid();
         const song = { title, artist, originType: value.originType, catalogVerified: false, normalizedKey: normalizedKey(title, artist) };
+        if (value.songId != null) song.songId = objectId(value.songId);
+        if (value.edition != null) song.edition = text(value.edition, 200);
+        if (song.edition) song.normalizedKey = JSON.stringify([normalize(title), normalize(artist), song.edition.normalize('NFC').toLowerCase()]);
         for (const [key, max] of [['genre', 200], ['album', 200], ['reason', 2000]]) {
             if (value[key] != null) song[key] = text(value[key], max);
         }
@@ -59,7 +63,7 @@ function append(doc, songs) {
 }
 export async function createPlaylist(owner, body) {
     const meta = metadata(body, true);
-    const songs = songInputs(body.songs === undefined ? [] : body.songs, true);
+    const songs = await attachSongReferences(songInputs(body.songs === undefined ? [] : body.songs, true));
     // Each owner has at most 100 unique slots. The unique index enforces the cap
     // even across processes, without a transaction or race-prone count()+insert.
     for (let attempt = 0; attempt < 5; attempt++) {
@@ -89,4 +93,8 @@ export async function mutatePlaylist(owner, id, mutate) {
     }
     throw new PlaylistError('CONFLICT', 409);
 }
-export const addSongs = (owner, id, songs) => mutatePlaylist(owner, id, doc => append(doc, songs));
+export const addSongs = async (owner, id, songs) => {
+    await ownedPlaylist(owner, id);
+    const linked = await attachSongReferences(songs);
+    return mutatePlaylist(owner, id, doc => append(doc, linked));
+};

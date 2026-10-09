@@ -33,12 +33,34 @@ búsqueda por título+artista, no IDs o enlaces directos de catálogo verificado
 El detalle/replay de historial regenera esos enlaces desde el snapshot existente;
 no se necesitan nuevas columnas ni guardar URLs en playlists.
 
-`GET /songs/lyrics?title=...&artist=...` consulta LRCLIB solo por estos metadatos,
-sin fragmento del usuario ni Authorization externo. Ambos strings1–200 caracteres.
+`GET /songs/lyrics?title=...&artist=...` resuelve una canción global en Mongo y
+consulta LRCLIB bajo demanda por estos metadatos, sin fragmento del usuario
+ni Authorization externo. Ambos strings1–200 caracteres. También acepta `songId`
+(ObjectId global, no ID de entrada de playlist) y `edition` opcional. Si se envían
+ID y metadatos deben corresponder. La identidad es provisional, no catálogo verificado.
 Respuesta `{success:true,data:{status,title,artist,lyrics,source,emotions,emotionAnalysis}}`:
-status `available|not_found|instrumental`, lyrics string o null, source LRCLIB.
-Solo se devuelve letra si coincide título/artista normalizados; no se genera con
-IA. La disponibilidad del texto depende de la fuente externa.
+El contrato añade songId, lookupAttempted, lyricsLookupStatus, cacheState, cacheHit,
+retryAfter y emotionAnalysis.sourceContentVersion. Estados clásicos se mantienen;
+se añaden never_attempted/in_progress/temporary_error/rights_restricted.
+Sólo se adjunta texto con coincidencia conservadora NFC. Guardarlo permanentemente
+requiere autorización documentada.
+**Persistencia de texto LRCLIB: BLOCKED_RIGHTS**: no se ha verificado permiso
+para almacenamiento permanente. Su lector bajo demanda vuelve a entregar el texto
+validado y analizarlo, sin copiar el cuerpo a Mongo. El gate de almacenamiento no
+debe transformar un positivo de búsqueda en un bloqueo de visualización.
+La API pública y licencia del software no autorizan letras de terceros. Ver
+`../ai/SONG_CACHE_RIGHTS_DECISION.md`. Las pruebas usan texto propio sintético autorizado.
+
+Estado persistido `transient`: text=null, fuente/hash/fechas/análisis en Song. DTO
+con cuerpo: status=available, lyricsStorage=transient, cacheState=transient. Memoria
+temporal de proceso:100 canciones/5min, purga por temporizador. Abrir un viejo
+rights_restricted de LRCLIB vuelve a consultar automáticamente; no requiere reset
+ni cooldown del bloqueo anterior. Un adaptador puede denegar explícitamente la
+entrega mediante transientPolicy; no se confunde con la falta de permiso de guardar.
+Tras caducar memoria/reiniciar/otra instancia es necesaria otra descarga. Los
+claims Mongo serializan adquisición/análisis; las instancias no comparten cuerpos
+que Mongo no guarda. El mismo hash reutiliza IA persistida (también después del
+reinicio). La entrega transitoria conserva el lector previo, no acredita licencia.
 
 En el mismo request, la letra disponible se analiza con el proveedor IA configurado.
 `emotions:[{code,score}]` contiene3 códigos distintos, ordenados, enteros positivos
@@ -46,19 +68,59 @@ que suman100. Códigos: joy/sadness/anger/fear/love/hope/nostalgia/calm.
 Son pesos relativos entre las3 emociones, no intensidad absoluta ni análisis de
 audio. `emotionAnalysis` informa status `estimated|unavailable|insufficient_evidence|not_applicable`,
 method `ai_lyrics`,scope `lyrics`,scale `relative_percent`,version1,provider/model,
-callCount/elapsedMs y sampled. Máximo1 llamada/500 tokens/10s, sin fallback;
+analyzedAt y sampled. Métricas de llamadas del proveedor quedan en tests, no en DTO.
+Máximo1 llamada/500 tokens/10s por trabajo adquirido, sin fallback;
 letras >12000 caracteres usan muestra del principio/final. Sin letra no hay IA.
 Si el proveedor no está disponible o el JSON no es válido, se devuelven letra y
 HTTP200 con emotions[]/unavailable; nunca se inventan métricas.
 
-Límites:30/min por IP/proceso, timeout8s, cuerpo256KiB/letra60000 caracteres,
-host HTTPS fijo sin redirecciones. 400 VALIDATION_ERROR;503 LYRICS_UNAVAILABLE;
-429 RATE_LIMITED. Cache-Control:no-store; letras no se guardan en Mongo/logs ni
-historial. La consulta de letra no requiere Mongo; las emociones usan credenciales
-del proveedor configurado en backend. Tests inyectan fetch LRCLIB y callAI
-deterministas; no descargan letras reales ni consumen proveedores de pago.
-Contrato y evidencia: `../ai/MUSIC_DETAILS_TABLES_PLAN.md` y
-`../ai/MUSIC_DETAILS_TABLES_EVIDENCE.md`.
+Límites:120/min por IP/proceso (incluye polling), timeout proveedor8s,
+cuerpo256KiB/letra60000 caracteres, host HTTPS fijo sin redirecciones.
+Mongo e índice UNIQUE canonicalKey son obligatorios: 503 SONG_CACHE_UNAVAILABLE,
+sin bypass. 400 VALIDATION_ERROR, 404 SONG_NOT_FOUND, 409 SONG_IDENTITY_MISMATCH,
+429 RATE_LIMITED. Cache-Control:no-store. Espera de espectador1.5s → 202 + Retry-After;
+no libera trabajo global si se cancela HTTP. Cada etapa tiene lease30s y budget12s.
+CAS y token impiden commit de worker antiguo. Tras crash entre proveedor/commit,
+la recuperación al caducar lease puede repetir el proveedor: no exactly-once universal.
+Relojes de instancias deben estar sincronizados. Negativos y bloqueos explícitos
+de entrega no se reconsultan automáticamente (excepción: migración lazy del bloqueo
+local LRCLIB antiguo, descrita arriba). Fallo lookup: cooldown exponencial30s–1h, respeta
+Retry-After hasta24h. Fallo IA: letra visible, retry explícito tras30s mediante
+`analysisOnly=true`, que no adquiere lookup para texto persistido o aún presente
+en memoria. Si el cuerpo transitorio caducó/falta en esta instancia, debe recuperarse
+antes de analizar; estimated/insufficient_evidence se
+reutilizan mientras coincidan hash de contenido y EMOTION_VERSION.
+
+**Refetch manual:** `refetchLyrics=true` permite volver a consultar `not_found` o
+`rights_restricted` tras30s desde la última finalización. No se activa al abrir una
+vista; requiere acción explícita. `lyricsRefetchAt` informa la fecha absoluta para
+habilitar el botón y `Retry-After` la espera restante. Si obtiene texto autorizado,
+se persiste y se ejecuta el análisis pendiente; en entrega transitoria sólo el hash
+y el análisis se guardan. Con texto persistido o aún en memoria no redescarga la
+letra; sólo recupera análisis faltante/fallido respetando su cooldown. Los flags
+`refetchLyrics` y `analysisOnly` son booleanos textuales y mutuamente excluyentes.
+Cada petición admite como máximo una adquisición de lookup, con el mismo CAS,
+lease y fencing. El refetch **no** concede derechos: un resultado aún restringido
+continúa sin texto/IA. Véase `../ai/SONG_CACHE_REFETCH.md`.
+
+### Persistencia autorizada y datos legacy
+La decisión histórica «nunca almacenar letras en Mongo» cambia **sólo para Song
+global con derechos documentados**. Nunca se copian a playlists, historial,
+localStorage ni logs; fragments de identificación siguen sin persistencia.
+Adaptadores de servidor `storagePolicy(data,song)` default-deny autorizan por
+procedencia/registro y referencia de derechos. Ningún flag HTTP o variable de
+entorno activa derechos de LRCLIB. Nuevas fuentes requieren revisión documentada.
+Search enlaza12 Song sin precargar letras/emociones. Historial conserva snapshot
+privado/TTL90d; playlist conserva ID de entrada y orden, con songId adicional.
+Legacy sin songId resuelve al abrir por título/artista/edición; no hay migración
+destructiva. Backfill opcional: recorrer lotes pequeños de snapshots, resolver sólo
+metadatos, actualizar songId únicamente si sigue ausente y los metadatos no cambiaron;
+repetir es idempotente, nunca copiar texto ni regenerar identificación. No ejecutado.
+Invalidación/revocación futura de derechos debe retirar texto y análisis mediante
+un procedimiento administrativo autorizado, no un endpoint público de reset.
+Tests inyectan fetch/callAI; no descargan letras reales ni usan IA de pago.
+Contrato/evidencia actual: `../ai/SONG_CACHE_MASTER_LOOP_PLAN.md` y
+`../ai/SONG_CACHE_FINAL_ACCEPTANCE.md` (sustituyen la parte de persistencia del diseño anterior).
 
 ## Ejemplo sin datos privados
 

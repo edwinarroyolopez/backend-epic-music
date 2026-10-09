@@ -13,6 +13,7 @@ export const inputSchema = new mongoose.Schema({
     needsConfirmation: Boolean, directoryStatus: { type: String, enum: ['available', 'unavailable'] },
 }, options);
 const songSchema = new mongoose.Schema({
+    songId: { type: mongoose.Schema.Types.ObjectId, ref: 'Song' }, edition: { type: String, maxlength: 200 },
     title: { type: String, maxlength: 200 }, artist: { type: String, maxlength: 200 },
     genre: { type: String, maxlength: 200 }, album: { type: String, maxlength: 200 },
     releaseYear: Number, reason: { type: String, maxlength: 2000 }, position: Number,

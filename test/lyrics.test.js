@@ -53,7 +53,23 @@ test('public lyrics HTTP validates inputs, no-store, safe errors and rate limits
         const failure = await fetch(`${base}?title=fail&artist=fixture`);
         assert.equal(failure.status, 503); assert.equal((await failure.json()).error.code, 'LYRICS_UNAVAILABLE');
         let limited = false;
-        for (let i = 0; i < 31; i++) if ((await fetch(`${base}?${new URLSearchParams(song)}`)).status === 429) { limited = true; break; }
+        for (let i = 0; i < 121; i++) if ((await fetch(`${base}?${new URLSearchParams(song)}`)).status === 429) { limited = true; break; }
         assert.ok(limited);
+    } finally { await new Promise(resolve => server.close(resolve)); }
+});
+test('HTTP forwards explicit refetch and rejects ambiguous or malformed retry flags', async () => {
+    const calls = [];
+    const server = createApp({ lyrics: (input, options) => { calls.push({ input, options }); return { ...input, status: 'not_found', lyrics: null }; } }).listen(0, '127.0.0.1');
+    await new Promise(resolve => server.once('listening', resolve));
+    const base = `http://127.0.0.1:${server.address().port}/songs/lyrics?${new URLSearchParams(song)}`;
+    try {
+        for (const flags of ['&refetchLyrics=yes', '&refetchLyrics=true&refetchLyrics=false', '&analysisOnly=1', '&analysisOnly=true&refetchLyrics=true']) {
+            assert.equal((await fetch(base + flags)).status, 400);
+        }
+        assert.equal(calls.length, 0);
+        assert.equal((await fetch(base + '&refetchLyrics=true')).status, 200);
+        assert.equal(calls[0].options.refetchLyrics, true); assert.equal(calls[0].options.analysisOnly, false);
+        assert.equal((await fetch(base + '&analysisOnly=true')).status, 200);
+        assert.equal(calls[1].options.refetchLyrics, false); assert.equal(calls[1].options.analysisOnly, true);
     } finally { await new Promise(resolve => server.close(resolve)); }
 });

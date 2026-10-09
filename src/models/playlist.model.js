@@ -1,6 +1,8 @@
 import mongoose from 'mongoose';
 
 const songSchema = new mongoose.Schema({
+    songId: { type: mongoose.Schema.Types.ObjectId, ref: 'Song' },
+    edition: { type: String, maxlength: 200 },
     title: { type: String, required: true },
     artist: { type: String, required: true },
     genre: String,

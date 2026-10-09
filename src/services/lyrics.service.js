@@ -1,4 +1,4 @@
-import { identityKey } from './search-normalization.js';
+import { songIdentityPart as identityKey } from '../models/song.model.js';
 import { analyzeLyricsEmotions, emptyEmotionAnalysis } from './emotions.service.js';
 
 const SOURCE = { name: 'LRCLIB', url: 'https://lrclib.net' };
@@ -36,7 +36,13 @@ export async function lookupLyrics({ title, artist }, { fetchImpl = fetch, signa
             signal: combined, redirect: 'error', headers: { Accept: 'application/json', 'User-Agent': 'MusicaEpica/1.0 (lyrics lookup)' },
         });
         if (response.status === 404) return empty;
-        if (!response.ok) throw new LyricsError();
+        if (!response.ok) {
+            const error = new LyricsError();
+            const retry = response.headers.get('retry-after');
+            const delay = /^\d+$/.test(retry || '') ? Number(retry) * 1000 : Date.parse(retry) - Date.now();
+            if (Number.isFinite(delay) && delay > 0) error.retryAfterMs = Math.min(delay, 24 * 3600000);
+            throw error;
+        }
         const data = await readJson(response);
         if (typeof data?.trackName !== 'string' || typeof data.artistName !== 'string') throw new LyricsError();
         // Never attach a similarly named artist's lyrics to this song.
@@ -45,7 +51,7 @@ export async function lookupLyrics({ title, artist }, { fetchImpl = fetch, signa
         if (data.plainLyrics == null || data.plainLyrics === '') return empty;
         if (typeof data.plainLyrics !== 'string' || data.plainLyrics.length > 60000) throw new LyricsError();
         const lyrics = data.plainLyrics.trim();
-        return lyrics ? { ...empty, status: 'available', lyrics } : empty;
+        return lyrics ? { ...empty, status: 'available', lyrics, source: { ...SOURCE, recordId: data.id == null ? null : String(data.id).slice(0, 200) } } : empty;
     } catch (error) {
         if (signal?.aborted) throw new DOMException('Cancelled', 'AbortError');
         throw error instanceof LyricsError ? error : new LyricsError();

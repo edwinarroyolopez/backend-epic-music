@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authenticateToken } from '../middlewares/auth.middleware.js';
 import { requireDatabaseReady } from '../middlewares/database.middleware.js';
 import { User } from '../models/user.model.js';
+import { SongError } from '../services/song-identity.service.js';
 import { Playlist, serializePlaylist } from '../models/playlist.model.js';
 import { PlaylistError, objectId, fields, invalid, metadata, songInputs, createPlaylist, ownedPlaylist, mutatePlaylist, addSongs } from '../services/playlist.service.js';
 
@@ -54,6 +55,6 @@ playlistRoutes.patch('/:playlistId/songs/order', async (req, res) => {
     }));
 });
 playlistRoutes.use((error, _req, res, _next) => {
-    const known = error instanceof PlaylistError;
+    const known = error instanceof PlaylistError || error instanceof SongError;
     res.status(known ? error.status : 500).json({ success: false, error: { code: known ? error.code : 'INTERNAL_ERROR', message: known ? error.message : 'Error interno' } });
 });
