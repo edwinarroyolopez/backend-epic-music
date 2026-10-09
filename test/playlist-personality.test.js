@@ -1,0 +1,102 @@
+import { before, after, test } from 'node:test';
+import assert from 'node:assert/strict';
+import mongoose from 'mongoose';
+import { MongoMemoryServer } from 'mongodb-memory-server';
+import { Song } from '../src/models/song.model.js';
+import { Playlist } from '../src/models/playlist.model.js';
+import { previewSelection, linkSelection, requireEnoughSongs } from '../src/services/playlist-personality-domain.service.js';
+import { createPlaylist } from '../src/services/playlist.service.js';
+import { randomUUID } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { PlaylistAnalysis } from '../src/models/playlist-analysis.model.js';
+import { createPersonalityService, requireAnalysisStore } from '../src/services/playlist-personality.service.js';
+import { authorizedEvidence } from '../src/services/playlist-personality-engine.service.js';
+let mongo;
+const owner = new mongoose.Types.ObjectId().toString(), other = new mongoose.Types.ObjectId().toString();
+const songs = [{ title: 'First', artist: 'Ártist', genre: 'Rock' }, { title: 'Second', artist: 'Other', genre: 'Folk' }, { title: ' First ', artist: 'Ártist' }];
+before(async () => { mongo = await MongoMemoryServer.create(); await mongoose.connect(mongo.getUri()); await Promise.all([Song.init(), Playlist.init()]); });
+after(async () => { await mongoose.disconnect(); await mongo?.stop(); });
+test('domain: ordered duplicates, NFC, bounded validation, no guest writes, global upserts', async () => {
+    const preview = await previewSelection({ sourceMode: 'manual', songs });
+    assert.equal(preview.uniqueSongCount, 2); assert.equal(preview.songs[2].duplicate, true);
+    assert.equal(await Song.countDocuments(), 0);
+    const [a, b] = await Promise.all([linkSelection(preview), linkSelection(preview)]);
+    assert.equal(a.songs[0].songId, b.songs[2].songId); assert.equal(await Song.countDocuments(), 2);
+    assert.ok((await Song.find().lean()).every(s => s.lyrics.lookupAttempted === false && s.catalogVerified === false));
+    await assert.rejects(previewSelection({ sourceMode: 'manual', songs: [{ title: '<script>', artist: 'x' }] }));
+    await assert.rejects(previewSelection({ sourceMode: 'manual', songs: Array(501).fill(songs[0]) }));
+    assert.throws(() => requireEnoughSongs({ uniqueSongCount: 1 }), /INSUFFICIENT_SONGS/);
+});
+test('internal: server-owned selection ignores client songs; cross-user and guest denied; explicit save dedupes', async () => {
+    const { doc, addedCount, skippedCount } = await createPlaylist(owner, { name: 'Selection', songs: songs.map(s => ({ ...s, originType: 'identified' })) });
+    assert.equal(addedCount, 2); assert.equal(skippedCount, 1);
+    const body = { sourceMode: 'internal', sourcePlaylistId: String(doc._id), songs: [{ title: 'FORGED' }] };
+    const preview = await previewSelection(body, owner); assert.equal(preview.songs[0].title, 'First');
+    const reviewedSongs = [{ title: 'Edited first', artist: 'Independent artist' }, { title: 'Edited second', artist: 'Other' }];
+    const edited = await previewSelection({ ...body, reviewedSongs }, owner);
+    assert.equal(edited.songs[0].title, 'Edited first'); assert.equal(edited.songs[0].provenance, 'internal_selection');
+    await assert.rejects(previewSelection({ ...body, reviewedSongs }, other), /NOT_FOUND/);
+    await Playlist.collection.updateOne({ _id: doc._id }, { $set: { 'songs.0.sourceProvenance': 'provider_api_metadata' } });
+    await assert.rejects(previewSelection({ ...body, reviewedSongs }, owner), /SOURCE_PROVENANCE_RESTRICTED/);
+    await Playlist.collection.updateOne({ _id: doc._id }, { $set: { 'songs.0.sourceProvenance': 'internal_selection' } });
+    await assert.rejects(previewSelection(body, other), /NOT_FOUND/);
+    await assert.rejects(previewSelection(body), /UNAUTHORIZED/);
+});
+const body = () => ({ sourceMode: 'manual', songs, title: 'Synthetic report', language: 'es', consent: true, independentSource: true, requestId: randomUUID() });
+test('cache: two instances, concurrent exact snapshots, private owners, versions and conflict', async () => {
+    let calls = 0;
+    const callAI = async ({ messages }) => { calls++; await new Promise(r => setTimeout(r, 80)); const d = JSON.parse(messages[1].content); return { provider: 'fixture', model: 'synthetic', content: JSON.stringify({ version: d.version, focus: d.candidates, representativeIndices: [0, 1] }) }; };
+    const a = createPersonalityService({ callAI }), b = createPersonalityService({ callAI });
+    const input = body();
+    const results = await Promise.allSettled(Array.from({ length: 10 }, (_, i) => (i % 2 ? a : b)({ ...input, requestId: randomUUID() }, owner)));
+    assert.ok(results.some(r => r.status === 'fulfilled')); assert.ok(results.filter(r => r.status === 'rejected').every(r => r.reason.code === 'ANALYSIS_IN_PROGRESS'));
+    assert.equal(calls, 1); assert.equal(await PlaylistAnalysis.countDocuments({ owner }), 1);
+    const cached = await a(input, owner); assert.equal(cached.cached, true); assert.equal(calls, 1);
+    await a(input, other); assert.equal(calls, 2); assert.equal(await Song.countDocuments(), 2);
+    await assert.rejects(a({ ...input, title: 'Changed with same UUID' }, owner), /REQUEST_CONFLICT/);
+    await assert.rejects(a({ ...input, requestId: input.requestId.toUpperCase(), title: 'Changed UUID casing' }, owner), /REQUEST_CONFLICT/);
+    await a({ ...input, requestId: randomUUID(), songs: [...songs].reverse() }, owner); assert.equal(calls, 3);
+    await createPersonalityService({ callAI, reportVersion: 'next-test-version' })({ ...input, requestId: randomUUID() }, owner); assert.equal(calls, 4);
+    const indexes = await PlaylistAnalysis.collection.indexes();
+    assert.ok(indexes.some(i => i.expireAfterSeconds === 0));
+    const dir = '../ai/playlist-personality/evidence/loop-04'; await mkdir(dir, { recursive: true });
+    await writeFile(`${dir}/cache.json`, JSON.stringify({ concurrentRequests: 10, concurrentAICalls: 1, cacheAdditionalCalls: 0, versionChangeAdditionalCalls: 1, songDocuments: 2, indexes: indexes.map(({ key, unique, expireAfterSeconds }) => ({ key, unique, expireAfterSeconds })) }, null, 2));
+});
+test('lease recovery, failure to persist never saved, missing unique index fails before AI', async () => {
+    let calls = 0;
+    const run = createPersonalityService({ callAI: async () => { calls++; throw new Error('provider offline'); } });
+    const input = { ...body(), title: 'Recovery' };
+    const first = await run(input, owner); assert.equal(first.entry.status, 'partial');
+    await PlaylistAnalysis.updateOne({ _id: first.entry.id }, { $set: { status: 'pending', report: null, leaseToken: 'crashed', leaseUntil: new Date(0) } });
+    const recovered = await run(input, owner); assert.equal(recovered.saved, true); assert.equal(calls, 2);
+    const original = PlaylistAnalysis.findOneAndUpdate;
+    PlaylistAnalysis.findOneAndUpdate = () => ({ maxTimeMS: () => ({ lean: async () => { throw new Error('Mongo unavailable'); } }) });
+    try { await assert.rejects(run({ ...body(), title: 'Write outage' }, owner), /Mongo unavailable/); } finally { PlaylistAnalysis.findOneAndUpdate = original; }
+    await PlaylistAnalysis.collection.dropIndex('owner_1_contentHash_1');
+    const beforeCalls = calls;
+    await assert.rejects(requireAnalysisStore(), /UNAVAILABLE/);
+    await assert.rejects(run({ ...body(), title: 'Missing index' }, owner), /UNAVAILABLE/); assert.equal(calls, beforeCalls);
+    await PlaylistAnalysis.syncIndexes();
+});
+test('emotional reuse excludes restricted and stale rights/version, never reads body', async () => {
+    const selection = await linkSelection(await previewSelection({ sourceMode: 'manual', songs }));
+    const id = selection.songs[0].songId;
+    await Song.updateOne({ _id: id }, { $set: { 'lyrics.contentVersion': 'synthetic-hash', 'lyrics.rights': { authorized: false, reference: 'synthetic' }, 'emotionAnalysis.status': 'estimated', 'emotionAnalysis.version': '1', 'emotionAnalysis.sourceContentVersion': 'synthetic-hash', emotions: [{ code: 'joy', score: 50 }, { code: 'hope', score: 30 }, { code: 'calm', score: 20 }] } });
+    assert.equal((await authorizedEvidence(selection.songs)).length, 0);
+    await Song.updateOne({ _id: id }, { $set: { 'lyrics.rights.authorized': true } });
+    const evidence = await authorizedEvidence(selection.songs); assert.equal(evidence.length, 2); assert.ok(!JSON.stringify(evidence).includes('text'));
+    await Song.updateOne({ _id: id }, { $set: { 'emotionAnalysis.version': 'old' } });
+    assert.equal((await authorizedEvidence(selection.songs)).length, 0);
+});
+test('concurrent final request aliases never acknowledge an unpersisted UUID', async () => {
+    const run = createPersonalityService({ callAI: async () => ({ content: 'invalid' }) });
+    const input = { ...body(), title: 'Alias boundary' }, first = await run(input, owner);
+    await PlaylistAnalysis.updateOne({ _id: first.entry.id }, { $set: { requestIds: Array.from({ length: 99 }, () => randomUUID()) } });
+    const inputs = [body(), body()].map(b => ({ ...input, requestId: b.requestId }));
+    const results = await Promise.allSettled(inputs.map(b => run(b, owner)));
+    for (let i = 0; i < results.length; i++) {
+        if (results[i].status === 'fulfilled') assert.ok(await PlaylistAnalysis.exists({ owner, requestIds: inputs[i].requestId }));
+        else assert.equal(results[i].reason.code, 'LIMIT_REACHED');
+    }
+    assert.equal((await PlaylistAnalysis.findById(first.entry.id)).requestIds.length, 100);
+});

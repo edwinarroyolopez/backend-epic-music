@@ -45,6 +45,12 @@ export async function ownedHistory(owner, id) {
     if (!doc) throw new HistoryError('NOT_FOUND', 404);
     return doc;
 }
+export async function replaceHistorySong(owner, id, song) {
+    const safe = new SearchHistory({ result: { song } }).toObject().result.song;
+    const updated = await SearchHistory.updateOne({ _id: historyId(id), owner, status: 'found', expiresAt: { $gt: new Date() } },
+        { $set: { 'result.song': safe } }, { runValidators: true, maxTimeMS: 1000 });
+    if (updated.matchedCount !== 1) throw new HistoryError('NOT_FOUND', 404);
+}
 export async function reserveHistory(owner, requestId, input) {
     // Recover abandoned reservations on the next accepted search, so a crashed
     // worker cannot leave an unbounded class of permanently pending rows.

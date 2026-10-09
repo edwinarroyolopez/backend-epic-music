@@ -1,0 +1,140 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { expect } from '@playwright/test';
+import { startLab } from './personality-lab.mjs';
+import { Song } from '../src/models/song.model.js';
+import { Playlist } from '../src/models/playlist.model.js';
+import { PlaylistAnalysis } from '../src/models/playlist-analysis.model.js';
+
+test('domain UI: explicit save, internal ownership, guest without private requests', async () => {
+    let aiCalls = 0;
+    const lab = await startLab({ callAI: async ({ messages }) => {
+        aiCalls++; const data = JSON.parse(messages[1].content);
+        return { provider: 'fixture', model: 'synthetic', content: JSON.stringify({ version: data.version, focus: data.candidates, representativeIndices: data.songs.slice(0, 3).map(s => s.index) }) };
+    } });
+    try {
+        const page = await lab.browser.newPage();
+        const requests = [], errors = [];
+        await page.route('**/*', route => new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort());
+        page.on('request', r => { if (r.url().startsWith(lab.base)) requests.push({ method: r.method(), path: new URL(r.url()).pathname }); });
+        page.on('pageerror', e => errors.push(e.message));
+        await page.goto(lab.ui);
+        await page.getByRole('tab', { name: 'Analizar mi playlist', exact: true }).click();
+        await page.getByLabel('Canciones independientes', { exact: true }).fill('One — Artist\nTwo — Other\nOne — Artist');
+        await page.getByRole('button', { name: 'Revisar canciones', exact: true }).click();
+        await expect(page.getByRole('button', { name: 'Guardar canciones en nueva playlist' })).toHaveCount(0);
+        assert.equal(requests.filter(r => r.path.startsWith('/playlists')).length, 0);
+        await page.getByLabel('Cómo aportar canciones').selectOption('link');
+        for (const [url, provider] of [['https://open.spotify.com/playlist/3cEYpjA9oz9GiPac4AsH4n', 'Spotify'], ['https://music.youtube.com/playlist?list=PL1234567890abc', 'YouTube']]) {
+            await page.getByRole('textbox', { name: 'Enlace de Spotify o YouTube', exact: true }).fill(url);
+            await page.getByRole('button', { name: 'Comprobar enlace', exact: true }).click();
+            await expect(page.getByText(provider === 'Spotify' ? /Integración de lectura pendiente/ : /Lectura sin configurar/)).toBeVisible();
+        }
+        assert.equal(aiCalls, 0);
+        const gateDir = '../ai/playlist-personality/evidence/loop-06'; await mkdir(gateDir, { recursive: true });
+        await page.screenshot({ path: `${gateDir}/recognized-link.png`, fullPage: true });
+        await writeFile(`${gateDir}/result.json`, JSON.stringify({ urlRecognition: 'PASS', spotifyMetadata: 'not_configured', youtubeMetadata: 'not_configured', aiCalls: 0, externalContentCalls: 0 }, null, 2));
+        await page.goto(`${lab.ui}/#/login`);
+        await page.getByRole('button', { name: 'Crear cuenta', exact: true }).click();
+        await page.getByLabel('Nombre para mostrar').fill('Synthetic');
+        await page.getByRole('textbox', { name: 'Nombre de usuario', exact: true }).fill('personality_test');
+        await page.getByRole('textbox', { name: 'Correo electrónico', exact: true }).fill('personality@example.test');
+        await page.getByLabel('Teléfono').fill('123456789');
+        await page.locator('#auth-password').fill('Synthetic-Password123!');
+        await page.getByRole('button', { name: 'Crear cuenta y entrar', exact: true }).click();
+        await expect(page.locator('#lyrics')).toBeVisible();
+        await page.getByRole('tab', { name: 'Analizar mi playlist', exact: true }).click();
+        await page.getByLabel('Canciones independientes', { exact: true }).fill('One — Artist\nTwo — Other\nOne — Artist');
+        await page.getByRole('button', { name: 'Revisar canciones', exact: true }).click();
+        await page.getByLabel('Nombre del informe / nueva playlist').fill('Synthetic selection');
+        await expect(page.getByRole('button', { name: 'Analizar playlist', exact: true })).toBeDisabled();
+        assert.equal(aiCalls, 0);
+        await page.getByRole('checkbox').check();
+        await page.getByRole('button', { name: 'Analizar playlist', exact: true }).click();
+        await expect(page.getByRole('article', { name: 'Informe musical' })).toBeVisible();
+        await expect(page.getByText('Tu universo emocional y posibles tendencias', { exact: true })).toBeVisible();
+        assert.equal(aiCalls, 1);
+        await page.getByRole('link', { name: 'Ver resultado guardado', exact: true }).click();
+        await expect(page.getByRole('article', { name: 'Informe musical' })).toBeVisible();
+        await page.reload();
+        await expect(page.getByRole('article', { name: 'Informe musical' })).toBeVisible();
+        assert.equal(aiCalls, 1);
+        await page.goto(`${lab.ui}/#/analizar`);
+        await page.getByLabel('Canciones independientes', { exact: true }).fill('One — Artist\nTwo — Other\nOne — Artist');
+        await page.getByRole('button', { name: 'Revisar canciones', exact: true }).click();
+        await page.getByLabel('Nombre del informe / nueva playlist').fill('Synthetic selection');
+        await page.getByRole('checkbox').check();
+        await page.getByRole('button', { name: 'Analizar playlist', exact: true }).click();
+        await expect(page.getByRole('article', { name: 'Informe musical' })).toBeVisible();
+        assert.equal(aiCalls, 1);
+        await page.getByRole('button', { name: 'Guardar canciones en nueva playlist', exact: true }).click();
+        await expect.poll(() => Playlist.countDocuments()).toBe(1);
+        const playlist = await Playlist.findOne().lean();
+        assert.equal(playlist.songs.length, 2); assert.equal(await Song.countDocuments(), 2);
+        await page.goto(`${lab.ui}/#/playlists/${playlist._id}`);
+        await page.getByRole('button', { name: 'Analizar personalidad musical', exact: true }).click();
+        await page.getByRole('button', { name: 'Revisar canciones', exact: true }).click();
+        await expect(page.getByLabel('Título 1', { exact: true })).toHaveValue('One');
+        await page.getByLabel('Género (opcional) 1', { exact: true }).fill('Rock');
+        await expect(page.getByLabel('Cómo aportar canciones')).toHaveValue('internal');
+        assert.equal(requests.filter(r => r.path.startsWith('/songs')).length, 0);
+        assert.deepEqual(errors, []);
+        const dir = '../ai/playlist-personality/evidence/loop-02'; await mkdir(dir, { recursive: true });
+        await page.screenshot({ path: `${dir}/internal.png`, fullPage: true });
+        await writeFile(`${dir}/result.json`, JSON.stringify({ passed: true, globalSongs: 2, appearances: 3, savedSongs: 2, externalLyricsCalls: 0, requests, errors }, null, 2));
+        const engineDir = '../ai/playlist-personality/evidence/loop-03'; await mkdir(engineDir, { recursive: true });
+        await writeFile(`${engineDir}/result.json`, JSON.stringify({ passed: true, aiCalls, externalLyricsCalls: 0, transport: 'injected synthetic planner', reportVisible: true }, null, 2));
+        const historyDir = '../ai/playlist-personality/evidence/loop-05'; await mkdir(historyDir, { recursive: true });
+        await writeFile(`${historyDir}/result.json`, JSON.stringify({ passed: true, reopenAndReloadAdditionalAICalls: 0, repeatedAnalysisAdditionalAICalls: 0 }, null, 2));
+    } finally { await lab.close(); }
+});
+
+test('history UI: eight songs, guest/demo isolation, local quota, delete confirmation and logout fences late result', async () => {
+    let aiCalls = 0, delay = 0;
+    const lab = await startLab({ callAI: async ({ messages }) => {
+        aiCalls++; await new Promise(r => setTimeout(r, delay)); const d = JSON.parse(messages[1].content);
+        return { provider: 'fixture', model: 'synthetic', content: JSON.stringify({ version: d.version, focus: d.candidates, representativeIndices: [0, 1] }) };
+    } });
+    try {
+        const page = await lab.browser.newPage({ viewport: { width: 390, height: 844 } });
+        const prepare = async () => {
+            await page.goto(`${lab.ui}/#/analizar`);
+            await page.getByLabel('Canciones independientes', { exact: true }).fill(Array.from({ length: 8 }, (_, i) => `Synthetic ${i} — Artist ${i % 3}`).join('\n'));
+            await page.getByRole('button', { name: 'Revisar canciones', exact: true }).click();
+            await page.getByLabel('Género (opcional) 1', { exact: true }).fill('Rock');
+            await page.getByLabel('Género (opcional) 2', { exact: true }).fill('Folk');
+            await page.getByRole('checkbox').check();
+        };
+        await prepare(); await page.getByRole('button', { name: 'Analizar playlist', exact: true }).click();
+        await expect(page.getByText('Informe guardado solo en este navegador.', { exact: true })).toBeVisible();
+        assert.equal(await PlaylistAnalysis.countDocuments(), 0); assert.equal(await Song.countDocuments(), 0);
+        await page.getByRole('link', { name: 'Ver resultado guardado', exact: true }).click();
+        await page.reload(); await expect(page.getByRole('article', { name: 'Informe musical' })).toBeVisible(); assert.equal(aiCalls, 1);
+        await prepare(); await page.getByRole('button', { name: 'Analizar playlist', exact: true }).click();
+        await expect(page.getByRole('article', { name: 'Informe musical' })).toBeVisible(); assert.equal(aiCalls, 1);
+        await page.getByRole('link', { name: 'Ver resultado guardado', exact: true }).click();
+        await page.getByRole('button', { name: 'Eliminar entrada', exact: true }).click();
+        await expect(page.getByRole('dialog')).toBeVisible();
+        await page.getByRole('button', { name: 'Confirmar eliminación', exact: true }).click();
+        await expect(page.getByText('Todavía no hay análisis en este historial.', { exact: true })).toBeVisible();
+        await page.evaluate(() => { localStorage.setItem('me:user', JSON.stringify({ provider: 'demo', isAuthenticated: true })); });
+        await page.reload(); await expect(page.getByText('Todavía no hay análisis en este historial.', { exact: true })).toBeVisible();
+        await prepare();
+        await page.evaluate(() => { const original = Storage.prototype.setItem; Storage.prototype.setItem = function (key, value) { if (key.includes('playlist-analysis')) throw new DOMException('synthetic quota', 'QuotaExceededError'); return original.call(this, key, value); }; });
+        await page.getByRole('button', { name: 'Analizar playlist', exact: true }).click();
+        await expect(page.getByText('Informe disponible, pero no se pudo guardar en este navegador. Comprueba el almacenamiento.', { exact: true })).toBeVisible();
+        const account = await lab.api('/auth/signup', { body: { username: 'late_result', name: 'Synthetic', email: 'late@example.test', phone: '123456789', password: 'Synthetic-Password123!' } });
+        await page.evaluate(({ token, user }) => { localStorage.setItem('me:token', token); localStorage.setItem('me:user', JSON.stringify({ ...user, isAuthenticated: true })); }, account);
+        await page.reload(); await prepare(); delay = 700;
+        const before = aiCalls;
+        await page.getByRole('button', { name: 'Analizar playlist', exact: true }).click();
+        await expect.poll(() => aiCalls).toBe(before + 1);
+        await page.evaluate(() => { localStorage.removeItem('me:token'); window.dispatchEvent(new Event('auth:expired')); });
+        await expect(page.getByRole('article', { name: 'Informe musical' })).toHaveCount(0);
+        await expect.poll(() => PlaylistAnalysis.countDocuments({ status: 'completed' })).toBe(1);
+        await expect(page.getByRole('article', { name: 'Informe musical' })).toHaveCount(0);
+        const dir = '../ai/playlist-personality/evidence/loop-05'; await mkdir(dir, { recursive: true });
+        await writeFile(`${dir}/local-and-logout.json`, JSON.stringify({ passed: true, guestSongs: 8, guestReloadAdditionalAI: 0, demoSeparate: true, quotaFailureVisible: true, deleteConfirmed: true, latePrivateResultHidden: true }, null, 2));
+    } finally { await lab.close(); }
+});

@@ -30,7 +30,7 @@ before(async () => {
 });
 beforeEach(async () => {
     calls = 0; mode = 'found';
-    server = createApp({ search: input => searchSimilarSongs(input, { callAI: async ({ messages, provider }) => {
+    server = createApp({ reidentify: { identify: async () => ({ found: true, verification: 'lyrics_match', song: { title: 'Corrected published title', artist: 'History fixture artist', catalogVerified: true } }) }, search: input => searchSimilarSongs(input, { callAI: async ({ messages, provider }) => {
         calls++;
         await new Promise(r => setTimeout(r, mode === 'slow' ? 100 : 5));
         if (mode === 'error') throw new DOMException('fixture', 'TimeoutError');
@@ -168,4 +168,26 @@ test('fresh production processes load persisted history and global directory aft
             const exited = new Promise(r => child.once('exit', r)); child.kill('SIGTERM'); if (child.exitCode === null) await exited;
         }
     }
+});
+
+test('corrected history survives reload with a new song reference and can be saved with recommendations', async () => {
+    const saved = await search();
+    const historyId = saved.data.history.id, originalId = saved.data.song.songId;
+    const body = { lyrics, historyId, previous: { title: saved.data.song.title, artist: saved.data.song.artist } };
+    assert.equal((await request('/reidentify-song', tokens[1], 'POST', body)).status, 404);
+    assert.equal((await request('/reidentify-song', null, 'POST', body)).status, 401);
+    const corrected = await request('/reidentify-song', tokens[0], 'POST', body);
+    assert.equal(corrected.status, 200); assert.equal(corrected.data.history.status, 'saved');
+    assert.notEqual(corrected.data.song.songId, originalId);
+    const detail = (await request(`/search-history/${historyId}`)).data.entry;
+    assert.equal(detail.song.title, 'Corrected published title'); assert.equal(detail.result.song.catalogVerified, true);
+    assert.equal(detail.result.recommendations.length, 11);
+    assert.equal((await Song.findById(originalId)).title, saved.data.song.title);
+    assert.ok(!JSON.stringify(await SearchHistory.findById(historyId).lean()).includes(lyrics));
+    const songs = [detail.result.song, detail.result.recommendations[0]].map((song, index) => ({ title: song.title, artist: song.artist, songId: song.songId, originType: index ? 'recommendation' : 'identified', catalogVerified: false }));
+    const playlist = await request('/playlists', tokens[0], 'POST', { name: 'History selection', songs });
+    assert.equal(playlist.status, 201); assert.equal(playlist.data.addedCount, 2);
+    assert.equal(playlist.data.playlist.songs[0].songId, corrected.data.song.songId);
+    const added = await request(`/playlists/${playlist.data.playlist.id}/songs`, tokens[0], 'POST', { songs });
+    assert.equal(added.status, 200); assert.equal(added.data.addedCount, 0); assert.equal(added.data.skippedCount, 2);
 });

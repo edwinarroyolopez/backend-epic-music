@@ -7,7 +7,11 @@
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
     "test": "node --test test/*.test.js",
-    "test:e2e": "node --test scripts/e2e.mjs"
+    "test:e2e": "node --test scripts/e2e.mjs",
+    "test:playlist-personality": "node --test --test-concurrency=1 scripts/personality-e2e.mjs scripts/personality-flow.mjs scripts/personality-acceptance.mjs scripts/personality-ux.mjs",
+    "test:playlist-acceptance": "node scripts/personality-checks.mjs",
+    "test:playlist-links": "node --test scripts/playlist-links-recovery.mjs",
+    "test:playlist-links:acceptance": "node scripts/playlist-links-checks.mjs"
   },
   "keywords": [],
   "author": "",
@@ -23,6 +27,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.64.0",
+    "axe-core": "^4.14.0",
     "mongodb-memory-server": "^11.3.0",
     "nodemon": "^3.1.14"
   }

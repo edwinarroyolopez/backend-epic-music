@@ -28,6 +28,26 @@ esa inicialización. `npm run dev` usa nodemon.
 
 ## Enlaces y letra completa
 
+### Corregir la canción de origen
+
+`POST /reidentify-song` recibe `{lyrics, artist?, previous?:{title,artist}, historyId?}`
+(fragmento de 15–12000 caracteres; nombres de hasta 200). Consulta LRCLIB por artista
+y, si hace falta, hasta tres candidatos propuestos por IA. Solo acepta una identidad
+cuando el fragmento completo coincide con la letra normalizada de un resultado único.
+No garantiza cobertura del catálogo: una falta de coincidencia o ambigüedad devuelve
+`{found:false,song:null,reason:"unconfirmed"|"ambiguous"}` sin cambiar el origen.
+
+Una coincidencia devuelve `{found:true,song,verification:"lyrics_match",history?}`,
+con una referencia global nueva si cambió la identidad, sin reutilizar el `songId`
+anterior. `historyId` requiere JWT y propiedad de la entrada; actualiza solo su canción
+de origen. El fragmento y las letras consultadas no se guardan. `history.status`
+indica `saved` o `unavailable`. Respuestas `no-store`; límite de 10 solicitudes/minuto.
+
+Prueba de navegador con Mongo efímero y proveedores simulados:
+`node --test scripts/search-history-ux.mjs` (Chromium, puerto 5173 disponible).
+
+### Consultar letras
+
 Cada canción de búsqueda añade `links:{youtube,spotify,appleMusic}`. Son URLs de
 búsqueda por título+artista, no IDs o enlaces directos de catálogo verificados.
 El detalle/replay de historial regenera esos enlaces desde el snapshot existente;

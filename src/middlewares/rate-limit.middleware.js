@@ -1,8 +1,8 @@
 // Single-process, bounded-memory limiter. Deliberately ignores spoofable headers.
-export function rateLimit({ limit = 60, windowMs = 60000, maxKeys = 5000 } = {}) {
+export function rateLimit({ limit = 60, windowMs = 60000, maxKeys = 5000, keyFor = req => req.socket.remoteAddress || 'unknown' } = {}) {
     const buckets = new Map();
     return (req, res, next) => {
-        const now = Date.now(), key = req.socket.remoteAddress || 'unknown';
+        const now = Date.now(), key = keyFor(req);
         if (buckets.size >= maxKeys) for (const [id, value] of buckets) if (value.until <= now) buckets.delete(id);
         let bucket = buckets.get(key);
         if (!bucket || bucket.until <= now) {

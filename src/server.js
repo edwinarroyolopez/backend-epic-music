@@ -6,6 +6,7 @@ import { Artist } from './models/artist.model.js';
 import { SearchHistory } from './models/search-history.model.js';
 import { requireSongStore } from './services/song-identity.service.js';
 import mongoose from 'mongoose';
+import { requireAnalysisStore } from './services/playlist-personality.service.js';
 
 const port = Number(process.env.PORT || 7000);
 // This app originally used port 7000; existing domains may still target it.
@@ -35,7 +36,7 @@ if (legacyPort > 0 && legacyPort !== server.address().port) {
 
 try {
     await connectMongo();
-    await Promise.all([Playlist.init(), Artist.init(), SearchHistory.init(), requireSongStore()]);
+    await Promise.all([Playlist.init(), Artist.init(), SearchHistory.init(), requireSongStore(), requireAnalysisStore()]);
     databaseInitialized = true;
     console.log('API lista: MongoDB e índices inicializados');
 } catch (error) {

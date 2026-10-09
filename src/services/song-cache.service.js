@@ -84,9 +84,21 @@ export function createSongCache({ Model = Song, lookup = lookupLyrics, storagePo
     const config = { ...defaults, ...timing };
     if (config.leaseMs <= config.workMs) throw new Error('Lease must exceed work budget');
     const transient = createTransientLyricsStore({ ttlMs: transientTtlMs, maxEntries: maxTransientEntries, now });
+    const localAcquisitions = new Map();
     const permitsTransient = doc => transientPolicy({ title: doc.title, artist: doc.artist, edition: doc.edition, source: doc.lyrics.source }, doc) === true;
     const analysisBusy = doc => doc.emotionAnalysis.status === 'in_progress' && new Date(doc.emotionAnalysis.lease?.expiresAt || 0) > now();
     async function acquireLyrics(doc) {
+        const key = String(doc._id);
+        // Mongo may expose a completed transient state before its acknowledgement
+        // reaches this worker and the body is published locally. Join that work
+        // instead of mistaking the acknowledgement window for an expired body.
+        if (localAcquisitions.has(key)) return localAcquisitions.get(key);
+        const work = acquireLyricsWork(doc);
+        localAcquisitions.set(key, work);
+        try { return await work; }
+        finally { if (localAcquisitions.get(key) === work) localAcquisitions.delete(key); }
+    }
+    async function acquireLyricsWork(doc) {
         const claimed = await claimSongWork(Model, doc, 'lyrics', { now: now(), leaseMs: config.leaseMs, metrics });
         if (!claimed) return;
         let fields, transientResult = null;

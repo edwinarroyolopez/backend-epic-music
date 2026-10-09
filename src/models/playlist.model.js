@@ -11,6 +11,7 @@ const songSchema = new mongoose.Schema({
     reason: String,
     originType: { type: String, enum: ['identified', 'recommendation'], required: true },
     catalogVerified: { type: Boolean, default: false, immutable: true },
+    sourceProvenance: { type: String, enum: ['internal_selection', 'user_independent', 'provider_api_metadata'], default: 'internal_selection', immutable: true },
     normalizedKey: { type: String, required: true },
     addedAt: { type: Date, default: Date.now },
 });

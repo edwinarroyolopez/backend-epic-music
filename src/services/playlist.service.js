@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { Playlist } from '../models/playlist.model.js';
 import { attachSongReferences } from './song-identity.service.js';
+import { assertIndependentSong } from './playlist-provenance.service.js';
 
 export const LIMITS = { playlists: 100, songs: 500, batch: 100 };
 export class PlaylistError extends Error {
@@ -31,6 +32,7 @@ export const normalizedKey = (title, artist) => JSON.stringify([normalize(title)
 export function songInputs(values, allowEmpty = false) {
     if (!Array.isArray(values) || values.length > LIMITS.batch || (!allowEmpty && !values.length)) invalid();
     return values.map(value => {
+        assertIndependentSong(value);
         fields(value, ['title', 'artist', 'genre', 'album', 'releaseYear', 'reason', 'originType', 'catalogVerified', 'songId', 'edition']);
         const title = text(value.title, 200, true), artist = text(value.artist, 200, true);
         if (!['identified', 'recommendation'].includes(value.originType)) invalid();
